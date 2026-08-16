@@ -4,6 +4,7 @@ import { newState }             from './core/state.js';
 import { saveGame, loadGame, clearSave, exportSave, importSave } from './core/persistence.js';
 import { avgStat, clamp, fmt }  from './core/utils.js';
 import { adapters, getAdapter } from './sports/adapters.js';
+import { getLeagueLeaders }    from './sports/basketball/index.js';
 import { footballAdapter }   from './sports/football/index.js';
 import { basketballAdapter } from './sports/basketball/index.js';
 import { render, renderStats, renderSeasonBar, statColor } from './ui/dom.js';
@@ -43,13 +44,27 @@ const App = {
     if (state.sport === 'football') {
       App.showFootballMatch();
     } else {
+      // Basketball: show scouting screen before the match (Epic #52)
       const matchCtx = adapter.createMatch(state);
-      const rng = createRNG(matchCtx.seed);
-      const result = adapter.simulateHeadless(state, { rng, ...matchCtx });
-      addLog(state, `Match gegen ${result.opponent}: ${result.score}`, result.result === 'win' ? 'good' : result.result === 'loss' ? 'bad' : 'neutral');
-      saveGame(state);
-      App.showMatch(result);
+      const oppTeamData = state.league?.teams?.[matchCtx.opponent];
+      if (oppTeamData?.roster && adapter.getScoutingInfo) {
+        const scouting = adapter.getScoutingInfo(oppTeamData.roster);
+        render(_basketballScoutScreen(matchCtx, scouting));
+      } else {
+        App.doBasketballMatch();
+      }
     }
+  },
+
+  doBasketballMatch() {
+    if (!state) return;
+    const adapter  = getAdapter(state.sport);
+    const matchCtx = adapter.createMatch(state);
+    const rng      = createRNG(matchCtx.seed);
+    const result   = adapter.simulateHeadless(state, { rng, ...matchCtx });
+    addLog(state, `Match gegen ${result.opponent}: ${result.score}`, result.result === 'win' ? 'good' : result.result === 'loss' ? 'bad' : 'neutral');
+    saveGame(state);
+    App.showMatch(result);
   },
 
   doTraining(stat) {
@@ -129,6 +144,11 @@ const App = {
     c.season++; c.week = 1; c.wins = 0; c.losses = 0; c.draws = 0;
     const bonus = isFootball ? state._rng.randInt(2000, 8000) * (c.leagueIndex + 1) : c.leagueIndex === 1 ? state._rng.randInt(1500000, 5000000) : state._rng.randInt(50000, 150000);
     p.money += bonus; p.totalEarned += bonus;
+    // Re-init league rosters for the new season (basketball only) (Epic #51)
+    if (!isFootball && adapter.initLeagueRoster) {
+      state.league = { teams: {}, season: c.season };
+      adapter.initLeagueRoster(state, state._rng);
+    }
   },
 
   // ── Interactive Football Match ───────────────────────
@@ -484,11 +504,58 @@ function _hubScreen() {
       ${renderStats(p)}
     </div>
     ${actions}
+    ${state.sport === 'basketball' ? _basketballLeagueSection() : ''}
     <div class="card">
       <div style="font-size:.8rem;color:var(--muted);margin-bottom:8px">LETZTE ERGEBNISSE</div>
       <div class="log">${logHtml || '<div style="color:var(--muted);font-size:.85rem">Noch keine Spiele gespielt.</div>'}</div>
     </div>
     <button class="btn btn-ghost btn-block" style="margin-top:8px" onclick="if(confirm('Spielstand wirklich löschen?'))App.doNewGame()">Neues Spiel</button>
+  </div>`;
+}
+
+// ── Basketball-only: Liga leaderboard (Epic #51) ─────────────────────────────
+function _basketballLeagueSection() {
+  if (!state.league || !Object.keys(state.league.teams).length) return '';
+  const { scorers, assisters } = getLeagueLeaders(state);
+  const row = pl => `<div style="display:flex;justify-content:space-between;font-size:.82rem;padding:2px 0">
+    <span>${pl.name} <span style="color:var(--muted);font-size:.75rem">(${pl.team})</span></span>
+    <strong>${pl.stats.pts} Pts</strong>
+  </div>`;
+  const rowAst = pl => `<div style="display:flex;justify-content:space-between;font-size:.82rem;padding:2px 0">
+    <span>${pl.name} <span style="color:var(--muted);font-size:.75rem">(${pl.team})</span></span>
+    <strong>${pl.stats.ast} Ast</strong>
+  </div>`;
+  return `<div class="card">
+    <div style="font-size:.8rem;color:var(--muted);margin-bottom:8px">🏆 LIGA — TOP SCORER</div>
+    ${scorers.length ? scorers.map(row).join('') : '<div style="color:var(--muted);font-size:.85rem">Noch keine Saison-Daten.</div>'}
+    <div style="font-size:.8rem;color:var(--muted);margin:10px 0 6px">🎯 TOP ASSISTGEBER</div>
+    ${assisters.length ? assisters.map(rowAst).join('') : ''}
+  </div>`;
+}
+
+// ── Basketball: scouting screen (Epic #52) ───────────────────────────────────
+function _basketballScoutScreen(matchCtx, scouting) {
+  const c = state.career;
+  const cfg = getAdapter(state.sport);
+  const starterRows = (scouting.starters || []).map(pl =>
+    `<div style="display:flex;justify-content:space-between;font-size:.82rem;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.06)">
+      <span><strong>${pl.position}</strong> ${pl.name}</span>
+      <span style="color:var(--muted)">${pl.tendency?.archetype || ''} · ${pl.rating} RTG</span>
+    </div>`).join('');
+  return `<div class="screen match-screen">
+    <div class="card">
+      <div style="color:var(--muted);font-size:.8rem;margin-bottom:8px">${cfg.icon} ${cfg.name} — Scouting Report</div>
+      <div style="font-size:1.1rem;font-weight:bold;margin-bottom:12px">${c.teamName} <span style="color:var(--muted)">vs</span> ${matchCtx.opponent}</div>
+      <div style="background:rgba(255,255,255,.05);border-radius:8px;padding:10px;margin-bottom:12px">
+        <div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">GEGNER-ANALYSE</div>
+        <div style="font-size:.95rem">Stärken: <strong>${scouting.strength}</strong></div>
+        <div style="font-size:.9rem;margin-top:4px;color:var(--muted)">Schlüsselspieler: ${scouting.keeper}</div>
+      </div>
+      <div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">STARTAUFSTELLUNG GEGNER</div>
+      ${starterRows}
+    </div>
+    <button class="btn btn-primary btn-block" onclick="App.doBasketballMatch()">Spielen 🏀</button>
+    <button class="btn btn-ghost btn-block" onclick="App.showHub()">← Zurück</button>
   </div>`;
 }
 
@@ -679,6 +746,10 @@ App.confirmCreate = function(sportId) {
   state = newState(sportId, name, position, adapter, rng);
   state._saveSeed = saveSeed;
   state._rng = rng;
+  // Initialise league-wide rosters for basketball (Epic #51)
+  if (sportId === 'basketball' && adapter.initLeagueRoster) {
+    adapter.initLeagueRoster(state, rng);
+  }
   saveGame(state);
   App.showHub();
 };

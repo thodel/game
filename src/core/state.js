@@ -56,6 +56,11 @@ export function newState(sport, playerName, position, adapter, rng) {
       promotions: 0,
       relegations: 0,
       bestMatchGoals: 0,
+      lastMatchWeek: 0, // for back-to-back detection (Epic #49)
+    },
+    league: {
+      teams: {},    // teamName → { roster, w, l, pts } (Epic #51)
+      season: 1,
     },
     achievements: [],
     log: [],
