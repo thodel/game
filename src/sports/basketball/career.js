@@ -181,6 +181,7 @@ export function showGameDay(state, App) {
         return `<div class="fixture"><b>Tag ${g.day}</b><span>${home ? 'vs' : '@'} ${opp.name}</span><i>${record(opp)}</i></div>`;
       }).join('')}</div>
       <div class="gameday-actions">
+        <button class="btn btn-ghost btn-sm" onclick="App.bbScout()">🔍 Gegner scouten</button>
         <button class="btn btn-ghost btn-sm" onclick="App.bbStandings()">📋 Tabelle</button>
         <button class="btn btn-ghost btn-sm" onclick="App.bbSchedule()">🗓️ Spielplan</button>
         <button class="btn btn-ghost btn-sm" onclick="App.showHub()">← Übersicht</button>

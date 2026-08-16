@@ -421,3 +421,24 @@ body {
 .series-round { display: block; color: var(--muted); font-size: .62rem; letter-spacing: .1em; }
 .playoff-log { display: flex; flex-direction: column; gap: 3px; text-align: left; color: var(--muted); font-size: .74rem; }
 .projected-note { margin: 4px 0 12px; padding: 7px 10px; color: var(--muted); background: var(--surface2); border-left: 3px solid var(--gold); border-radius: 4px; font-size: .74rem; text-align: left; }
+
+/* ===== EPIC 43 — BROADCAST PRESENTATION ===== */
+.broadcast-header { background: #0a0f14; border-radius: 8px; padding: 14px 18px; margin-bottom: 12px; font-family: monospace; }
+.broadcast-linescore { display: grid; grid-template-columns: 1fr repeat(5,40px); gap:4px; font-size:.85rem; }
+.broadcast-linescore .team-col { font-weight:700; }
+.broadcast-linescore .q-col { text-align:center; color:var(--muted); }
+.broadcast-linescore .total-col { text-align:center; font-weight:900; color:var(--text); }
+.pbp-line { padding: 5px 0; border-bottom: 1px solid #1c2128; font-size:.88rem; line-height:1.5; }
+.pbp-line.player { color: #3fb950; }
+.pbp-line.opponent { color: #f85149; }
+.pbp-line.special { color: #d29922; font-weight:700; }
+.pbp-line.quarter-break { color: var(--muted); font-size:.78rem; text-align:center; padding:8px 0; border-bottom:2px solid #30363d; }
+.pbp-line.crowd { color: #8b949e; font-size:.78rem; font-style:italic; }
+.box-score { width:100%; border-collapse:collapse; font-size:.83rem; margin-top:12px; }
+.box-score th { background:#161b22; padding:6px 8px; text-align:left; font-size:.72rem; color:var(--muted); text-transform:uppercase; }
+.box-score td { padding:6px 8px; border-bottom:1px solid #21262d; }
+.box-score tr.human-row td { color:#58a6ff; font-weight:700; }
+.result-banner { text-align:center; padding:20px; border-radius:8px; margin:12px 0; animation: fadeIn .5s; }
+.result-banner.win  { background:#2ea04322; border:1px solid #2ea043; }
+.result-banner.loss { background:#f8514922; border:1px solid #f85149; }
+.result-banner.draw { background:#d2992222; border:1px solid #d29922; }
