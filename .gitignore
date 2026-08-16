@@ -219,7 +219,7 @@ __marimo__/
 
 # Node
 node_modules/
-package-lock.json
+# package-lock.json stays tracked: `npm ci` in CI requires it
 dist/
 .vite/
 
