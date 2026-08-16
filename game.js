@@ -274,6 +274,32 @@ const App = (() => {
 
   function showFootballMatch() {
     const opponent = footballOpponent();
+    liveMatch = { opponent, phase: 'intro', keys: new Set(), raf: null, cleanup: null, introStart: performance.now(), introTimer: null };
+    render(`
+      <div class="screen stadium-screen">
+        ${renderHUD()}
+        <div class="card stadium-card">
+          <canvas id="stadium-intro-canvas" width="1200" height="675" aria-label="Teams laufen in das Stadion ein"></canvas>
+          <div class="stadium-vignette"></div>
+          <div class="stadium-title">
+            <span>${leagueName(state)} · SPIELTAG ${state.career.week}</span>
+            <div class="stadium-fixture">
+              <div><i class="stadium-crest home-crest">${state.career.teamName.charAt(0)}</i><strong>${state.career.teamName}</strong></div>
+              <b>VS</b>
+              <div><i class="stadium-crest away-crest">${opponent.charAt(0)}</i><strong>${opponent}</strong></div>
+            </div>
+            <p>Die Mannschaften betreten den Rasen</p>
+          </div>
+          <div class="stadium-progress"><span id="stadium-progress-bar"></span></div>
+          <button class="stadium-skip" type="button" onclick="App.skipStadiumIntro()">Zum Anstoss →</button>
+        </div>
+      </div>
+    `);
+    liveMatch.introTimer = setTimeout(skipStadiumIntro, 6500);
+    liveMatch.raf = requestAnimationFrame(stadiumIntroFrame);
+  }
+
+  function showFootballKickoff(opponent) {
     render(`
       <div class="screen live-match-screen">
         ${renderHUD()}
@@ -292,6 +318,16 @@ const App = (() => {
               <button class="btn btn-success" onclick="App.startFootballMatch()">Anstoss ⚽</button>
             </div>
             <div class="live-message" id="live-message"></div>
+            <div class="touch-gamepad" aria-label="Touch-Steuerung">
+              <div class="touch-joystick" id="touch-joystick" aria-label="Virtueller Joystick">
+                <div class="touch-joystick-ring"></div>
+                <div class="touch-joystick-knob" id="touch-joystick-knob"></div>
+              </div>
+              <div class="touch-actions">
+                <button class="touch-action touch-sprint" id="touch-sprint" type="button">SPRINT</button>
+                <button class="touch-action touch-shoot" id="touch-shoot" type="button"><span>⚽</span>SCHIESSEN</button>
+              </div>
+            </div>
           </div>
           <div class="live-controls">
             <span><kbd>WASD</kbd> oder Pfeiltasten: bewegen</span>
@@ -307,14 +343,58 @@ const App = (() => {
     requestAnimationFrame(() => drawFootballPreview());
   }
 
+  function skipStadiumIntro() {
+    const match=liveMatch;
+    if(!match||match.phase!=='intro')return;
+    if(match.raf)cancelAnimationFrame(match.raf);
+    if(match.introTimer)clearTimeout(match.introTimer);
+    showFootballKickoff(match.opponent);
+  }
+
+  function stadiumIntroFrame(now) {
+    const match=liveMatch,canvas=document.getElementById('stadium-intro-canvas');
+    if(!match||match.phase!=='intro'||!canvas)return;
+    const progress=Math.min(1,(now-match.introStart)/6000);
+    drawStadiumIntro(canvas.getContext('2d'),canvas.width,canvas.height,progress,now/1000);
+    const bar=document.getElementById('stadium-progress-bar');if(bar)bar.style.width=`${progress*100}%`;
+    match.raf=requestAnimationFrame(stadiumIntroFrame);
+  }
+
+  function drawStadiumIntro(context,w,h,progress,time) {
+    const sky=context.createLinearGradient(0,0,0,h*.55);sky.addColorStop(0,'#07101c');sky.addColorStop(1,'#172c35');context.fillStyle=sky;context.fillRect(0,0,w,h);
+    [[115,72],[1085,72]].forEach(([x,y])=>{const glow=context.createRadialGradient(x,y,0,x,y,210);glow.addColorStop(0,'rgba(240,248,255,.48)');glow.addColorStop(.18,'rgba(190,220,255,.13)');glow.addColorStop(1,'rgba(140,190,255,0)');context.fillStyle=glow;context.fillRect(x-220,y-220,440,440);context.fillStyle='#eff7ff';for(let i=0;i<6;i++)for(let j=0;j<3;j++)context.fillRect(x-30+i*12,y-12+j*12,7,7);});
+    context.fillStyle='#1d252b';context.beginPath();context.moveTo(0,112);context.lineTo(w,112);context.lineTo(w,455);context.quadraticCurveTo(w/2,350,0,455);context.closePath();context.fill();
+    context.fillStyle='#303a40';context.beginPath();context.moveTo(0,150);context.lineTo(w,150);context.lineTo(w,382);context.quadraticCurveTo(w/2,305,0,382);context.closePath();context.fill();
+    context.fillStyle='#11191e';context.fillRect(0,275,w,24);
+    const crowdColors=['#e9edf0','#dfff53','#cf4141','#4774d8','#f2b84b'];
+    for(let row=0;row<10;row++)for(let col=0;col<82;col++){const x=col*(w/81)+(row%2)*5,y=158+row*20+Math.sin(col*.71+row+time*2)*1.8;context.fillStyle=crowdColors[(col*3+row*7)%crowdColors.length];context.globalAlpha=.68;context.beginPath();context.arc(x,y,2.8+(row*.08),0,Math.PI*2);context.fill();}
+    context.globalAlpha=1;
+    const grass=context.createLinearGradient(0,315,0,h);grass.addColorStop(0,'#347d42');grass.addColorStop(1,'#174c2d');context.fillStyle=grass;context.beginPath();context.moveTo(290,310);context.lineTo(910,310);context.lineTo(1200,675);context.lineTo(0,675);context.closePath();context.fill();
+    for(let i=0;i<9;i++){context.fillStyle=i%2?'rgba(255,255,255,.025)':'rgba(0,0,0,.055)';const topX=290+i*620/9,bottomX=i*w/9;context.beginPath();context.moveTo(topX,310);context.lineTo(topX+620/9,310);context.lineTo(bottomX+w/9,675);context.lineTo(bottomX,675);context.closePath();context.fill();}
+    context.strokeStyle='rgba(255,255,255,.7)';context.lineWidth=3;context.beginPath();context.moveTo(290,310);context.lineTo(0,675);context.moveTo(910,310);context.lineTo(1200,675);context.moveTo(600,310);context.lineTo(600,675);context.stroke();
+    context.fillStyle='#0a0d0f';context.beginPath();context.moveTo(520,294);context.lineTo(680,294);context.lineTo(700,388);context.lineTo(500,388);context.closePath();context.fill();context.strokeStyle='#69737a';context.lineWidth=5;context.stroke();
+    const walk=Math.min(1,progress*1.35),bob=Math.sin(time*8)*2;
+    for(let i=0;i<6;i++){const reveal=Math.max(0,Math.min(1,(walk-i*.075)/.62));if(reveal<=0)continue;const y=340+reveal*(235+i*10),spread=reveal*145;drawStadiumPerson(context,570-spread-i*5,y+bob*(i%2?1:-1),'home',i===0,1+reveal*.35);drawStadiumPerson(context,630+spread+i*5,y-bob*(i%2?1:-1),'away',i===0,1+reveal*.35);}
+    const vignette=context.createRadialGradient(w/2,h*.56,150,w/2,h*.56,700);vignette.addColorStop(.55,'rgba(0,0,0,0)');vignette.addColorStop(1,'rgba(0,0,0,.7)');context.fillStyle=vignette;context.fillRect(0,0,w,h);
+  }
+
+  function drawStadiumPerson(context,x,y,team,keeper,scale) {
+    const kit=keeper?'#f2a900':team==='home'?'#dfff53':'#4267d6',trim=team==='home'?'#132016':'#e2e8ff',skin=team==='home'?'#d8a378':'#966247';
+    context.save();context.translate(x,y);context.scale(scale,scale);context.fillStyle='rgba(0,0,0,.28)';context.beginPath();context.ellipse(0,16,14,5,0,0,Math.PI*2);context.fill();
+    context.strokeStyle=skin;context.lineWidth=5;context.lineCap='round';context.beginPath();context.moveTo(-9,-3);context.lineTo(-18,8);context.moveTo(9,-3);context.lineTo(18,8);context.stroke();
+    context.strokeStyle=trim;context.lineWidth=7;context.beginPath();context.moveTo(-5,16);context.lineTo(-8,30);context.moveTo(5,16);context.lineTo(8,30);context.stroke();
+    context.fillStyle=kit;context.beginPath();context.roundRect(-12,-12,24,31,7);context.fill();context.fillStyle=trim;context.fillRect(-12,7,24,4);
+    context.fillStyle=skin;context.beginPath();context.arc(0,-21,9,0,Math.PI*2);context.fill();context.fillStyle='#281b15';context.beginPath();context.arc(0,-24,8,Math.PI,Math.PI*2);context.fill();context.restore();
+  }
+
   function drawFootballPreview() {
     const canvas = document.getElementById('football-canvas');
     if (!canvas || !liveMatch) return;
     const context = canvas.getContext('2d');
     drawFootballPitch(context, canvas.width, canvas.height);
     const preview = [
-      {x:110,y:270,team:'home'}, {x:310,y:170,team:'home'}, {x:390,y:350,team:'home'},
-      {x:850,y:270,team:'away'}, {x:650,y:170,team:'away'}, {x:570,y:350,team:'away'}
+      {x:110,y:270,team:'home',keeper:true,number:1,facing:0}, {x:310,y:170,team:'home',number:10,facing:0}, {x:390,y:350,team:'home',number:8,facing:0},
+      {x:850,y:270,team:'away',keeper:true,number:1,facing:Math.PI}, {x:650,y:170,team:'away',number:9,facing:Math.PI}, {x:570,y:350,team:'away',number:6,facing:Math.PI}
     ];
     preview.forEach((p, i) => drawFootballer(context, p, i === 1));
     drawFootball(context, {x:480,y:270,r:8});
@@ -327,19 +407,20 @@ const App = (() => {
     if (!canvas) return;
     kickoff?.remove();
 
-    const human = {x:300,y:270,homeX:300,homeY:270,team:'home',r:14,vx:0,vy:0,human:true,cooldown:0};
+    const human = {x:300,y:270,homeX:300,homeY:270,team:'home',r:14,vx:0,vy:0,human:true,cooldown:0,number:10,facing:0,stride:0};
     const players = [
-      {x:105,y:270,homeX:105,homeY:270,team:'home',r:17,keeper:true,cooldown:0},
+      {x:105,y:270,homeX:105,homeY:270,team:'home',r:17,keeper:true,cooldown:0,number:1,facing:0,stride:0},
       human,
-      {x:360,y:150,homeX:360,homeY:150,team:'home',r:14,cooldown:0},
-      {x:855,y:270,homeX:855,homeY:270,team:'away',r:17,keeper:true,cooldown:0},
-      {x:660,y:270,homeX:660,homeY:270,team:'away',r:14,cooldown:0},
-      {x:600,y:390,homeX:600,homeY:390,team:'away',r:14,cooldown:0},
+      {x:360,y:150,homeX:360,homeY:150,team:'home',r:14,cooldown:0,number:8,facing:0,stride:0},
+      {x:855,y:270,homeX:855,homeY:270,team:'away',r:17,keeper:true,cooldown:0,number:1,facing:Math.PI,stride:0},
+      {x:660,y:270,homeX:660,homeY:270,team:'away',r:14,cooldown:0,number:9,facing:Math.PI,stride:0},
+      {x:600,y:390,homeX:600,homeY:390,team:'away',r:14,cooldown:0,number:6,facing:Math.PI,stride:0},
     ];
     Object.assign(liveMatch, {
       phase:'playing', canvas, context:canvas.getContext('2d'), players, human,
       ball:{x:480,y:270,r:8,vx:0,vy:0,owner:null}, score:{home:0,away:0},
-      events:[], elapsed:0, last:performance.now(), resetUntil:0
+      events:[], elapsed:0, last:performance.now(), resetUntil:0,
+      touch:{x:0,y:0,sprint:false,pointerId:null}
     });
 
     const down = e => {
@@ -350,7 +431,8 @@ const App = (() => {
     const up = e => liveMatch?.keys.delete(e.code);
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
-    liveMatch.cleanup = () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
+    const cleanupTouch = setupTouchGamepad(liveMatch);
+    liveMatch.cleanup = () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); cleanupTouch(); };
     footballFrame(performance.now());
   }
 
@@ -372,13 +454,16 @@ const App = (() => {
     const k = m.keys;
     let dx = (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0) - (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0);
     let dy = (k.has('KeyS') || k.has('ArrowDown') ? 1 : 0) - (k.has('KeyW') || k.has('ArrowUp') ? 1 : 0);
+    if (Math.hypot(m.touch.x,m.touch.y) > .08) { dx=m.touch.x; dy=m.touch.y; }
     const length = Math.hypot(dx,dy) || 1;
-    const speed = k.has('ShiftLeft') || k.has('ShiftRight') ? 225 : 170;
+    const speed = k.has('ShiftLeft') || k.has('ShiftRight') || m.touch.sprint ? 225 : 170;
     m.human.vx = dx/length*speed; m.human.vy = dy/length*speed;
 
     m.players.forEach(p => {
       p.cooldown = Math.max(0, p.cooldown - dt);
       if (!p.human) updateFootballAI(m, p);
+      const movement=Math.hypot(p.vx||0,p.vy||0);
+      if(movement>4){p.facing=Math.atan2(p.vy,p.vx);p.stride=(p.stride||0)+dt*movement*.08;}
       p.x = clamp(p.x + (p.vx || 0)*dt, 48+p.r, 912-p.r);
       p.y = clamp(p.y + (p.vy || 0)*dt, 34+p.r, 506-p.r);
     });
@@ -436,6 +521,31 @@ const App = (() => {
     const tx=player.team==='home'?940:20, ty=270+rand(-65,65);
     const d=Math.hypot(tx-player.x,ty-player.y)||1;
     m.ball.owner=null; m.ball.vx=(tx-player.x)/d*500; m.ball.vy=(ty-player.y)/d*500; player.cooldown=.5;
+  }
+
+  function setupTouchGamepad(match) {
+    const joystick=document.getElementById('touch-joystick');
+    const knob=document.getElementById('touch-joystick-knob');
+    const sprint=document.getElementById('touch-sprint');
+    const shoot=document.getElementById('touch-shoot');
+    if(!joystick||!knob||!sprint||!shoot)return()=>{};
+    const moveJoystick=e=>{
+      if(match.touch.pointerId!==e.pointerId)return;
+      e.preventDefault();
+      const rect=joystick.getBoundingClientRect(),cx=rect.left+rect.width/2,cy=rect.top+rect.height/2;
+      const max=rect.width*.31,rawX=e.clientX-cx,rawY=e.clientY-cy,d=Math.hypot(rawX,rawY)||1,scale=Math.min(1,max/d);
+      const x=rawX*scale,y=rawY*scale;
+      match.touch.x=x/max;match.touch.y=y/max;knob.style.transform=`translate(${x}px,${y}px)`;
+    };
+    const startJoystick=e=>{e.preventDefault();match.touch.pointerId=e.pointerId;joystick.setPointerCapture(e.pointerId);moveJoystick(e);};
+    const endJoystick=e=>{if(match.touch.pointerId!==e.pointerId)return;match.touch.pointerId=null;match.touch.x=0;match.touch.y=0;knob.style.transform='translate(0,0)';};
+    const sprintOn=e=>{e.preventDefault();match.touch.sprint=true;sprint.classList.add('pressed');sprint.setPointerCapture?.(e.pointerId);};
+    const sprintOff=()=>{match.touch.sprint=false;sprint.classList.remove('pressed');};
+    const shootBall=e=>{e.preventDefault();shoot.classList.add('pressed');footballShoot(match.human);setTimeout(()=>shoot.classList.remove('pressed'),120);};
+    joystick.addEventListener('pointerdown',startJoystick);joystick.addEventListener('pointermove',moveJoystick);joystick.addEventListener('pointerup',endJoystick);joystick.addEventListener('pointercancel',endJoystick);
+    sprint.addEventListener('pointerdown',sprintOn);sprint.addEventListener('pointerup',sprintOff);sprint.addEventListener('pointercancel',sprintOff);
+    shoot.addEventListener('pointerdown',shootBall);
+    return()=>{joystick.removeEventListener('pointerdown',startJoystick);joystick.removeEventListener('pointermove',moveJoystick);joystick.removeEventListener('pointerup',endJoystick);joystick.removeEventListener('pointercancel',endJoystick);sprint.removeEventListener('pointerdown',sprintOn);sprint.removeEventListener('pointerup',sprintOff);sprint.removeEventListener('pointercancel',sprintOff);shoot.removeEventListener('pointerdown',shootBall);};
   }
 
   function footballGoal(team) {
@@ -498,9 +608,25 @@ const App = (() => {
   }
 
   function drawFootballer(context,p,selected) {
-    context.fillStyle='rgba(0,0,0,.28)';context.beginPath();context.ellipse(p.x+2,p.y+6,p.r+3,p.r*.6,0,0,Math.PI*2);context.fill();
-    context.fillStyle=p.team==='home'?'#dfff53':'#4267d6';context.beginPath();context.arc(p.x,p.y,p.r,0,Math.PI*2);context.fill();context.strokeStyle=p.team==='home'?'#152016':'#c5d0ff';context.lineWidth=3;context.stroke();
-    if(selected){context.strokeStyle='#fff';context.lineWidth=2;context.beginPath();context.arc(p.x,p.y,p.r+7,0,Math.PI*2);context.stroke();}
+    const angle=Number.isFinite(p.facing)?p.facing:(p.team==='home'?0:Math.PI);
+    const moving=Math.hypot(p.vx||0,p.vy||0)>8;
+    const step=moving?Math.sin(p.stride||0)*3:0;
+    const kit=p.keeper?'#f2a900':p.team==='home'?'#dfff53':'#4267d6';
+    const trim=p.keeper?'#211b0c':p.team==='home'?'#142016':'#d5ddff';
+    const skin=p.team==='home'?'#d7a071':'#9a6548';
+    context.save();context.translate(p.x,p.y);context.rotate(angle);
+    context.fillStyle='rgba(0,0,0,.3)';context.beginPath();context.ellipse(-2,7,p.r+7,p.r*.72,0,0,Math.PI*2);context.fill();
+    context.strokeStyle=trim;context.lineWidth=5;context.lineCap='round';
+    context.beginPath();context.moveTo(-8,-3);context.lineTo(-15,-10+step);context.moveTo(-8,4);context.lineTo(-15,12-step);context.stroke();
+    context.strokeStyle=skin;context.lineWidth=4;
+    context.beginPath();context.moveTo(0,-8);context.lineTo(3,-17-step*.35);context.moveTo(0,8);context.lineTo(3,17+step*.35);context.stroke();
+    context.fillStyle=kit;context.strokeStyle=trim;context.lineWidth=2;context.beginPath();context.moveTo(-10,-10);context.quadraticCurveTo(2,-14,10,-8);context.lineTo(10,8);context.quadraticCurveTo(2,14,-10,10);context.closePath();context.fill();context.stroke();
+    context.fillStyle=trim;context.font='800 8px system-ui';context.textAlign='center';context.textBaseline='middle';context.fillText(String(p.number||7),0,0);
+    context.fillStyle=skin;context.strokeStyle='rgba(44,26,17,.75)';context.lineWidth=1.5;context.beginPath();context.arc(12,0,p.r*.47,0,Math.PI*2);context.fill();context.stroke();
+    context.fillStyle='#332319';context.beginPath();context.arc(13,0,p.r*.38,Math.PI*.75,Math.PI*1.25);context.lineTo(12,0);context.fill();
+    context.fillStyle=trim;context.beginPath();context.ellipse(-16,-10+step,4,2.6,0,0,Math.PI*2);context.ellipse(-16,12-step,4,2.6,0,0,Math.PI*2);context.fill();
+    context.restore();
+    if(selected){context.strokeStyle='#fff';context.lineWidth=2;context.beginPath();context.arc(p.x,p.y,p.r+10,0,Math.PI*2);context.stroke();context.fillStyle='#fff';context.beginPath();context.moveTo(p.x-5,p.y-p.r-16);context.lineTo(p.x+5,p.y-p.r-16);context.lineTo(p.x,p.y-p.r-9);context.fill();}
   }
 
   function drawFootball(context,b) {
@@ -1032,6 +1158,7 @@ const App = (() => {
     confirmNewGame,
     _doNewGame,
     playMatch,
+    skipStadiumIntro,
     startFootballMatch,
     abandonFootballMatch,
     train,
