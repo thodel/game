@@ -15,13 +15,39 @@ const App = (() => {
       color: 'football',
       positions: ['Torwart', 'Abwehr', 'Mittelfeld', 'Stürmer'],
       stats: ['Tempo', 'Technik', 'Schuss', 'Dribbling', 'Kondition', 'Kopfball'],
-      leagues: ['Kreisliga', '4. Liga', '3. Liga', 'Regionalliga', '2. Bundesliga', 'Bundesliga', 'Champions League'],
       matchEvents: {
-        player: ['Tor! ⚽', 'Traumpass 🎯', 'Elfer verwandelt 💥', 'Flanke zum Tor 🎪', 'Freistoss ✨'],
-        opponent: ['Gegentor 😤', 'Elfmeter kassiert ⚠️', 'Rote Karte! 🟥', 'Eigentor 😱'],
-        neutral: ['Gelbe Karte 🟨', 'Pfostentreffer 😬', 'Grosschance vergeben 😤', 'Verlängerung! ⏱️'],
+        player: ['Tor! ⚽', 'Traumpass 🎯', 'Elfer verwandelt 💥', 'Flanke zum Tor 🎪', 'Freistoss ✨', 'Volley-Knaller 💥', 'Kopfball-Tor 🦅'],
+        opponent: ['Gegentor 😤', 'Elfmeter kassiert ⚠️', 'Rote Karte! 🟥', 'Eigentor 😱', 'Spätausgleich 😮'],
+        neutral: ['Gelbe Karte 🟨', 'Pfostentreffer 😬', 'Grosschance vergeben 😤', 'Verlängerung! ⏱️', 'VAR-Entscheid 📺', 'Elfmeterschiessen 💥'],
       },
-      teamNames: ['FC Bayern', 'Dortmund', 'Leipzig', 'Leverkusen', 'Frankfurt', 'Stuttgart', 'Wolfsburg', 'Hoffenheim', 'Freiburg', 'Mainz', 'Augsburg', 'Bochum', 'Gladbach', 'Union Berlin', 'Heidenheim', 'Köln', 'Schalke', 'Hamburg'],
+      teamsByLeague: [
+        // 0: Kreisliga
+        ['FC Dorfkicker', 'SV Grüntal', 'TSV Bergheim', 'SpVgg Niederbach', 'FC Rot-Weiß Kleinstadt', 'SV Eintracht Tal', 'FV Waldrand', 'Sportfreunde Heide', 'VfB Musterburg', 'FC Sonnenberg', 'TSG Blautal', 'SV Schwarzwald', 'FC Feldkirch', 'VfL Steinbach'],
+        // 1: Regionalliga
+        ['SSV Ulm 1846', 'Jahn Regensburg', 'SV Elversberg', 'FC Ingolstadt 04', '1. FC Saarbrücken', 'Hallescher FC', 'Rot-Weiß Essen', 'Preußen Münster', 'MSV Duisburg', 'FC Erzgebirge Aue', 'Dynamo Dresden', 'SpVgg Unterhaching', 'TSV 1860 München', 'VfB Lübeck', 'Kickers Offenbach', 'SV Wehen Wiesbaden'],
+        // 2: 2. Bundesliga
+        ['Hamburger SV', '1. FC Köln', 'FC Schalke 04', 'Hertha BSC', '1. FC Kaiserslautern', 'Hannover 96', 'Fortuna Düsseldorf', 'Karlsruher SC', 'SpVgg Greuther Fürth', '1. FC Nürnberg', 'Eintracht Braunschweig', '1. FC Magdeburg', 'SC Paderborn', 'SV Darmstadt 98', 'Holstein Kiel', 'FC St. Pauli'],
+        // 3: Ligue 2
+        ['Paris FC', 'FC Metz', 'Grenoble Foot 38', 'SM Caen', 'AS Saint-Étienne', 'Amiens SC', 'Valenciennes FC', 'Rodez AF', 'US Quevilly-Rouen', 'Annecy FC', 'En Avant Guingamp', 'Stade Lavallois', 'US Concarneau', 'Pau FC', 'AJ Auxerre', 'ESTAC Troyes'],
+        // 4: 1. Bundesliga
+        ['FC Bayern München', 'Borussia Dortmund', 'RB Leipzig', 'Bayer 04 Leverkusen', 'Eintracht Frankfurt', 'VfB Stuttgart', 'VfL Wolfsburg', 'TSG 1899 Hoffenheim', 'SC Freiburg', '1. FSV Mainz 05', 'FC Augsburg', 'VfL Bochum', 'Borussia Mönchengladbach', '1. FC Union Berlin', '1. FC Heidenheim', 'Werder Bremen'],
+        // 5: La Liga
+        ['Real Madrid CF', 'FC Barcelona', 'Atlético de Madrid', 'Athletic Club Bilbao', 'Real Sociedad', 'Villarreal CF', 'Valencia CF', 'Sevilla FC', 'Real Betis', 'RC Celta Vigo', 'Girona FC', 'CA Osasuna', 'Rayo Vallecano', 'Getafe CF', 'RCD Mallorca', 'UD Las Palmas', 'RCD Espanyol', 'Deportivo Alavés'],
+        // 6: Ligue 1
+        ['Paris Saint-Germain', 'Olympique de Marseille', 'Olympique Lyonnais', 'AS Monaco', 'LOSC Lille', 'Stade Rennais FC', 'RC Lens', 'OGC Nice', 'Toulouse FC', 'Stade de Reims', 'Montpellier HSC', 'RC Strasbourg', 'FC Nantes', 'Angers SCO', 'Le Havre AC', 'Stade Brestois 29'],
+        // 7: Premier League
+        ['Manchester City', 'Arsenal FC', 'Liverpool FC', 'Chelsea FC', 'Manchester United', 'Tottenham Hotspur', 'Newcastle United', 'Aston Villa', 'Brighton & Hove Albion', 'West Ham United', 'Brentford FC', 'Crystal Palace', 'Fulham FC', 'Wolverhampton Wanderers', 'Everton FC', 'Nottingham Forest', 'AFC Bournemouth', 'Leicester City', 'Southampton FC', 'Ipswich Town'],
+        // 8: Conference League
+        ['ACF Fiorentina', 'Olympiakos FC', 'Real Betis', 'AZ Alkmaar', 'SC Braga', 'KAA Gent', 'PAOK FC', 'SK Rapid Wien', 'FC Basel', 'Djurgårdens IF', 'Molde FK', 'Go Ahead Eagles', 'FC København', 'FC Lugano', 'HJK Helsinki', 'FC Viktoria Plzeň'],
+        // 9: Europa League
+        ['AS Roma', 'SS Lazio', 'Atlético de Madrid', 'Atalanta BC', 'Eintracht Frankfurt', 'Bayer 04 Leverkusen', 'AFC Ajax', 'PSV Eindhoven', 'FC Porto', 'SL Benfica', 'Galatasaray SK', 'Fenerbahçe SK', 'Olympique Lyonnais', 'Sevilla FC', 'SK Slavia Praha', 'Rangers FC'],
+        // 10: Champions League
+        ['Real Madrid CF', 'FC Barcelona', 'Manchester City', 'Liverpool FC', 'FC Bayern München', 'Paris Saint-Germain', 'Juventus FC', 'FC Internazionale', 'AC Milan', 'Chelsea FC', 'Arsenal FC', 'Atlético de Madrid', 'Borussia Dortmund', 'RB Leipzig', 'SL Benfica', 'AFC Ajax', 'FC Porto', 'Celtic FC', 'Shakhtar Donetsk', 'Club Brugge', 'SSC Napoli', 'Feyenoord', 'FC Red Bull Salzburg', 'BSC Young Boys'],
+      ],
+      leagues: ['Kreisliga', 'Regionalliga', '2. Bundesliga', 'Ligue 2', '1. Bundesliga', 'La Liga', 'Ligue 1', 'Premier League', 'Conference League', 'Europa League', 'Champions League'],
+      leagueFlags: ['🇩🇪','🇩🇪','🇩🇪','🇫🇷','🇩🇪','🇪🇸','🇫🇷','🇬🇧','🇪🇺','🇪🇺','🇪🇺'],
+      europeanCupStart: 8,
+      get teamNames() { return this.teamsByLeague[4]; },
     },
     basketball: {
       name: 'Basketball',
@@ -120,14 +146,88 @@ const App = (() => {
     return a;
   }
 
+  // ── Epic #3 helpers ───────────────────────────
+  function generateContract(sport, leagueIndex) {
+    const isBasketball = sport === 'basketball';
+    let wage;
+    if (isBasketball) { wage = leagueIndex === 1 ? rand(50000, 300000) : rand(1000, 5000); }
+    else { wage = rand(200, 2000) * (leagueIndex + 1); }
+    return { wage, lengthSeasons: rand(1, 3), expiresAfterSeason: rand(2, 5), bonusPerGoal: isBasketball ? rand(500, 2000) : rand(50, 200) };
+  }
+
+  function initLeagueTable(sport, myTeamName, leagueIndex) {
+    if (sport !== 'football') return [];
+    const pool = (CONFIG.football.teamsByLeague[leagueIndex] || CONFIG.football.teamsByLeague[4])
+      .filter(n => n !== myTeamName);
+    const rivals = shuffle(pool).slice(0, 9); // 9 rivals + player = 10-team league
+    const leagueStr = 35 + leagueIndex * 5; // stronger teams in higher leagues
+    const table = rivals.map(name => ({ name, strength: rand(leagueStr - 10, leagueStr + 20), w:0, d:0, l:0, pts:0, gf:0, ga:0 }));
+    table.push({ name: myTeamName, strength: 40 + leagueIndex * 4, w:0, d:0, l:0, pts:0, gf:0, ga:0, isPlayer: true });
+    return table;
+  }
+
+  function generateFixtures(leagueTable, myTeamName) {
+    if (!leagueTable || leagueTable.length === 0) return [];
+    const rivals = leagueTable.filter(t => t.name !== myTeamName);
+    const leagueWeekPool = [1,2,3,4,5,6,7,9,10,11,12,13,14,15,17,18,19,20,21,22];
+    const selected = shuffle(leagueWeekPool).slice(0, 14).sort((a,b) => a-b);
+    const fixtures = [];
+    rivals.forEach((rival, i) => {
+      fixtures.push({ week: selected[i], opponent: rival.name, home: true, type: 'league', played: false });
+      fixtures.push({ week: selected[i + 7], opponent: rival.name, home: false, type: 'league', played: false });
+    });
+    fixtures.push({ week: 8,  opponent: 'Pokal-Gegner', home: rand(0,1)===1, type: 'cup', played: false });
+    fixtures.push({ week: 16, opponent: 'Pokal-Gegner', home: rand(0,1)===1, type: 'cup', played: false });
+    return fixtures.sort((a,b) => a.week - b.week);
+  }
+
+  function simulateRivalFixtures(leagueTable) {
+    if (!leagueTable || leagueTable.length < 2) return;
+    const rivals = leagueTable.filter(t => !t.isPlayer);
+    if (rivals.length < 2) return;
+    const n = rand(3, 4);
+    for (let i = 0; i < n; i++) {
+      const idx1 = rand(0, rivals.length - 1);
+      let idx2 = rand(0, rivals.length - 2); if (idx2 >= idx1) idx2++;
+      const home = rivals[idx1], away = rivals[idx2];
+      const hScore = home.strength + rand(0, 30), aScore = away.strength + rand(0, 30);
+      if (hScore > aScore) {
+        const hg = rand(1,3), ag = rand(0,2);
+        home.w++; home.pts+=3; home.gf+=hg; home.ga+=ag;
+        away.l++; away.gf+=ag; away.ga+=hg;
+      } else if (hScore < aScore) {
+        const ag = rand(1,3), hg = rand(0,2);
+        away.w++; away.pts+=3; away.gf+=ag; away.ga+=hg;
+        home.l++; home.gf+=hg; home.ga+=ag;
+      } else {
+        const g = rand(0,2);
+        home.d++; home.pts++; home.gf+=g; home.ga+=g;
+        away.d++; away.pts++; away.gf+=g; away.ga+=g;
+      }
+    }
+  }
+
+  function advanceWeek() {
+    const c = state.career, p = state.player;
+    if (state.contract) { p.money += state.contract.wage; p.totalEarned += state.contract.wage; }
+    if (p.injury) {
+      p.injury.weeksLeft--;
+      if (p.injury.weeksLeft <= 0) { p.injury = null; addLog('Verletzung auskuriert! Bereit für den Einsatz. 🏃', 'good'); }
+    }
+    if ((p.suspension || 0) > 0) p.suspension--;
+    c.week++;
+    if (c.week > c.weeksPerSeason) endSeason();
+  }
+
   function newState(sport, playerName, position) {
     const cfg = CONFIG[sport];
     const isBasketball = sport === 'basketball';
     const baseStats = {};
-    // Basketball: start with higher stats (NBA-level rookie)
     cfg.stats.forEach(s => { baseStats[s] = isBasketball ? rand(45, 65) : rand(20, 40); });
     const startLeague = cfg.startLeagueIndex ?? 0;
-    const startTeams = isBasketball ? cfg.teamsByLeague[startLeague] : cfg.teamNames;
+    const startTeams = isBasketball ? cfg.teamsByLeague[startLeague] : (cfg.teamsByLeague?.[startLeague] || cfg.teamNames);
+    const teamName = startTeams[rand(0, startTeams.length - 1)];
+    const leagueTable = initLeagueTable(sport, teamName, startLeague);
     return {
       sport,
       player: {
@@ -141,33 +241,25 @@ const App = (() => {
         totalEarned: isBasketball ? 0 : 0,
         stats: baseStats,
         skillPoints: isBasketball ? 2 : 3,
+        injury: null,
+        suspension: 0,
+        yellowCards: 0,
       },
       career: {
         leagueIndex: startLeague,
-        teamName: startTeams[rand(0, startTeams.length - 1)],
-        season: 1,
-        seasons: 0,
-        week: 1,
-        // Basketball: NBA=38 weeks (30 regular + 8 playoffs), G-League=24 (20+4)
-        // Football: 24 weeks
+        teamName,
+        season: 1, seasons: 0, week: 1,
         weeksPerSeason: isBasketball ? (startLeague === 1 ? 38 : 24) : 24,
         regularSeasonWeeks: isBasketball ? (startLeague === 1 ? 30 : 20) : 24,
-        wins: 0,
-        losses: 0,
-        draws: 0,
-        goals: 0,
-        assists: 0,
-        promotions: 0,
-        relegations: 0,
-        bestMatchGoals: 0,
-        // Basketball league table
-        bbStandings: isBasketball ? initBBStandings(startLeague, startTeams[rand(0, startTeams.length - 1)]) : null,
-        // Playoff state
+        wins: 0, losses: 0, draws: 0,
+        goals: 0, assists: 0, promotions: 0, relegations: 0, bestMatchGoals: 0,
+        bbStandings: isBasketball ? initBBStandings(startLeague, teamName) : null,
         playoffs: null,
       },
-      achievements: [],
-      log: [],
-      seasonLog: [],
+      achievements: [], log: [], seasonLog: [],
+      contract: generateContract(sport, startLeague),
+      leagueTable,
+      fixtures: generateFixtures(leagueTable, teamName),
     };
   }
 
@@ -323,8 +415,23 @@ const App = (() => {
     return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
   }
 
+  // #18 — position-weighted rating
+  function positionRating(player) {
+    const weights = (POSITION_WEIGHTS[state.sport] || {})[player.position];
+    if (!weights) return avgStat(player);
+    let total = 0, wSum = 0;
+    for (const [stat, val] of Object.entries(player.stats)) {
+      const w = weights[stat] ?? 1.0;
+      total += val * w; wSum += w;
+    }
+    return Math.round(total / wSum);
+  }
+
   function leagueName(s) {
-    return CONFIG[s.sport].leagues[s.career.leagueIndex] || 'Unbekannt';
+    const cfg = CONFIG[s.sport];
+    const name = cfg.leagues[s.career.leagueIndex] || 'Unbekannt';
+    const flag = cfg.leagueFlags?.[s.career.leagueIndex] || '';
+    return flag ? flag + ' ' + name : name;
   }
 
   function statColor(v) {
@@ -368,7 +475,7 @@ const App = (() => {
     const cfg = CONFIG[state.sport];
     const p = state.player;
     const c = state.career;
-    const skill = avgStat(p);
+    const skill = positionRating(p);
     const leagueDiff = c.leagueIndex * 8;
     const opponentStrength = clamp(30 + leagueDiff + rand(-10, 10), 20, 95);
     const playerStrength = clamp(skill + rand(-8, 8), 10, 100);
@@ -446,13 +553,34 @@ const App = (() => {
     // Simulate rival games for BB standings
     if (state.sport === 'basketball') simBBRivalWeek();
 
-    // Week advance
-    c.week++;
-    if (c.week > c.weeksPerSeason) endSeason();
+    // #17 Injury check (basketball; football uses finishFootballMatch)
+    let injuryMsg = null;
+    if (state.sport !== 'football') {
+      const injuryChance = p.energy < 30 ? 0.15 : 0.08;
+      if (!p.injury && Math.random() < injuryChance) {
+        const sev = Math.random();
+        if (sev < 0.6) {
+          const wl = rand(1,2); injuryMsg = `Muskelverletzung \u2014 ${wl} Wochen Pause`;
+          p.injury = { weeksLeft: wl, type: 'minor' };
+        } else if (sev < 0.9) {
+          const wl = rand(3,5); injuryMsg = `B\u00e4nderriss \u2014 ${wl} Wochen Pause`;
+          p.injury = { weeksLeft: wl, type: 'moderate' };
+        } else {
+          const wl = rand(6,10); injuryMsg = `Knochenbruch \u2014 ${wl} Wochen Pause`;
+          const physStats = ['Speed','Dunks'];
+          const dmgStat = physStats[rand(0, physStats.length-1)];
+          p.stats[dmgStat] = clamp(p.stats[dmgStat] - 2, 1, 99);
+          p.injury = { weeksLeft: wl, type: 'severe' };
+        }
+        addLog(`\u26a0\ufe0f ${injuryMsg}`, 'bad');
+      }
+    }
+
+    advanceWeek();
 
     return {
       playerGoals, oppGoals, result, opponent,
-      events, money, personal, assists,
+      events, money, personal, assists, injuryMsg,
       score: isFootball ? `${playerGoals} : ${oppGoals}` : `${playerGoals + 50} : ${oppGoals + 50}`,
     };
   }
@@ -959,30 +1087,58 @@ const App = (() => {
     if (winRate >= promotionThreshold && c.leagueIndex < cfg.leagues.length - 1) {
       c.leagueIndex++;
       c.promotions++;
-      const teams = isBasketball ? cfg.teamsByLeague[c.leagueIndex] : cfg.teamNames;
+      const teams = isBasketball
+        ? cfg.teamsByLeague[c.leagueIndex]
+        : (cfg.teamsByLeague?.[c.leagueIndex] || cfg.teamNames);
       c.teamName = teams[rand(0, teams.length - 1)];
       if (isBasketball) {
         addLog(`NBA Comeback! Zurück in der NBA bei den ${c.teamName}! 🏀🔥`, 'special');
       } else {
-        addLog(`Aufgestiegen! Jetzt in der ${leagueName(state)} 🎉`, 'special');
+        const flag = cfg.leagueFlags?.[c.leagueIndex] || '';
+        addLog(`${flag} Aufgestiegen in die ${leagueName(state)}! Neuer Klub: ${c.teamName} 🎉`, 'special');
       }
     } else if (winRate < relegationThreshold && c.leagueIndex > 0) {
       c.leagueIndex--;
       c.relegations++;
-      const teams = isBasketball ? cfg.teamsByLeague[c.leagueIndex] : cfg.teamNames;
+      const teams = isBasketball
+        ? cfg.teamsByLeague[c.leagueIndex]
+        : (cfg.teamsByLeague?.[c.leagueIndex] || cfg.teamNames);
       c.teamName = teams[rand(0, teams.length - 1)];
       if (isBasketball && c.leagueIndex === 0) {
         addLog(`Abgestiegen in die G-League (${c.teamName}). Kämpf dich zurück! 😤`, 'bad');
       } else {
-        addLog(`Abgestiegen in die ${leagueName(state)} 😤`, 'bad');
+        const flag = cfg.leagueFlags?.[c.leagueIndex] || '';
+        addLog(`${flag} Abgestiegen in die ${leagueName(state)} (${c.teamName}) 😤`, 'bad');
       }
     } else {
       if (isBasketball && c.leagueIndex === 1) {
         addLog(`NBA-Saison ${c.season - 1} überstanden. Vertrag verlängert bei den ${c.teamName}. 💰`, 'neutral');
       } else if (isBasketball && c.leagueIndex === 0) {
         addLog(`G-League Saison abgeschlossen (${Math.round(winRate * 100)}% Siege). Noch nicht gut genug für NBA.`, 'neutral');
+      } else if (!isBasketball) {
+        // Football: check European cup qualification (leagues 4-7 = top national leagues)
+        const ecStart = cfg.europeanCupStart ?? 8;
+        if (c.leagueIndex >= 4 && c.leagueIndex < ecStart) {
+          if (winRate >= 0.60) {
+            addLog(`🏆 Champions League qualifiziert! Nächste Saison in der Champions League!`, 'special');
+            // Store pending euro cup — will activate next season as parallel
+            c.pendingEuroCup = 'cl';
+          } else if (winRate >= 0.50) {
+            addLog(`🇪🇺 Europa League qualifiziert für nächste Saison!`, 'special');
+            c.pendingEuroCup = 'el';
+          } else if (winRate >= 0.42) {
+            addLog(`🇪🇺 Conference League qualifiziert für nächste Saison!`, 'neutral');
+            c.pendingEuroCup = 'ecl';
+          } else {
+            c.pendingEuroCup = null;
+            addLog(`Saison ${c.season - 1} abgeschlossen. Keine Europacup-Qualifikation.`, 'neutral');
+          }
+        } else {
+          const flag = cfg.leagueFlags?.[c.leagueIndex] || '';
+          addLog(`${flag} Saison ${c.season - 1} abgeschlossen. Bleibst in der ${leagueName(state)}.`, 'neutral');
+        }
       } else {
-        addLog(`Saison ${c.season - 1} abgeschlossen. Bleibst in der ${leagueName(state)}.`, 'neutral');
+        addLog(`Saison ${c.season - 1} abgeschlossen.`, 'neutral');
       }
     }
 
@@ -1189,7 +1345,7 @@ const App = (() => {
     const baseStats = {};
     cfg.stats.forEach(s => { baseStats[s] = isBasketball ? rand(45, 65) : rand(30, 55); });
     const startLeague = cfg.startLeagueIndex ?? 0;
-    const teams = isBasketball ? cfg.teamsByLeague[startLeague] : cfg.teamNames;
+    const teams = isBasketball ? cfg.teamsByLeague[startLeague] : (cfg.teamsByLeague?.[startLeague] || cfg.teamNames);
     const myTeam = teams[rand(0, teams.length-1)];
     state = {
       sport,
