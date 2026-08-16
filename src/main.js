@@ -7,6 +7,7 @@ import { adapters, getAdapter } from './sports/adapters.js';
 import { getLeagueLeaders }    from './sports/basketball/index.js';
 import { footballAdapter }   from './sports/football/index.js';
 import { basketballAdapter } from './sports/basketball/index.js';
+import * as bb                from './sports/basketball/career.js';
 import { render, renderStats, renderSeasonBar, statColor } from './ui/dom.js';
 import { addLog }               from './ui/log.js';
 import { generatePlayByPlay, generateQuarterScores } from './ui/commentary.js';
@@ -44,17 +45,39 @@ const App = {
     const adapter = getAdapter(state.sport);
     if (state.sport === 'football') {
       App.showFootballMatch();
-    } else {
-      // Basketball: show scouting screen before the match (Epic #52)
-      const matchCtx = adapter.createMatch(state);
-      const oppTeamData = state.league?.teams?.[matchCtx.opponent];
-      if (oppTeamData?.roster && adapter.getScoutingInfo) {
-        const scouting = adapter.getScoutingInfo(oppTeamData.roster);
-        render(_basketballScoutScreen(matchCtx, scouting));
-      } else {
-        App.doBasketballMatch();
-      }
+    } else if (state.sport === 'basketball') {
+      // The season owns the fixture list; the game-day screen offers playing it
+      // live, simulating it, or scouting the opponent first.
+      bb.ensureSeason(state, basketballAdapter.teamsByLeague);
+      const season = state.career.nba;
+      if (season.playoffs && season.playoffs.stage !== 'done') bb.showPlayoffs(state, App);
+      else bb.showGameDay(state, App);
     }
+  },
+
+  // ── Basketball season ──────────────────────────────
+  bbGameDay()     { bb.ensureSeason(state, basketballAdapter.teamsByLeague); bb.showGameDay(state, App); },
+  bbPlay()        { bb.playSeasonGame(state, App); },
+  bbStartMatch()  { bb.startMatch(state, App); },
+  bbAbandon()     { bb.abandonMatch(state, App); },
+  bbSimulate()    { bb.simulateNextGame(state, App); },
+  bbSimSeason()   { bb.simulateSeason(state, App); },
+  bbStandings()   { bb.showStandings(state, App); },
+  bbSchedule()    { bb.showSchedule(state, App); },
+  bbPlayoffs()    { bb.showPlayoffs(state, App); },
+  bbPlayoffPlay() { bb.playPlayoffGame(state, App); },
+  bbPlayoffSim()  { bb.simulatePlayoffGame(state, App); },
+  bbNextSeason()  { bb.startNextSeason(state, App, basketballAdapter.teamsByLeague); },
+
+  // Scouting report for the next scheduled opponent (Epic #52)
+  bbScout() {
+    if (!state) return;
+    const adapter = getAdapter('basketball');
+    const info = bb.nextGameInfo(state);
+    if (!info || !adapter.getScoutingInfo) return App.bbGameDay();
+    const oppTeamData = state.league?.teams?.[info.opponent.name];
+    if (!oppTeamData?.roster) return App.bbGameDay();
+    render(_basketballScoutScreen({ opponent: info.opponent.name }, adapter.getScoutingInfo(oppTeamData.roster)));
   },
 
   doBasketballMatch() {
@@ -71,22 +94,32 @@ const App = {
   doTraining(stat) {
     const p = state.player, c = state.career;
     if (p.energy < 20) return;
+    // A basketball season runs on a calendar: training spends an off day, and on
+    // a game day there is none to spend.
+    if (state.sport === 'basketball' && !bb.spendRestDay(state, basketballAdapter.teamsByLeague)) {
+      addLog(state, 'Spieltag — heute wird gespielt, nicht trainiert.', 'neutral');
+      saveGame(state);
+      return App.bbGameDay();
+    }
     const gain = state._rng.randInt(2, 6);
     p.stats[stat] = clamp(p.stats[stat] + gain, 1, 99);
     p.energy = clamp(p.energy - state._rng.randInt(10, 20), 0, 100);
     p.money -= 50;
-    c.week++;
-    if (c.week > c.weeksPerSeason) { App.endSeason(); }
+    if (state.sport !== 'basketball') { c.week++; if (c.week > c.weeksPerSeason) { App.endSeason(); } }
     addLog(state, `Training: ${stat} +${gain}`, 'good');
     saveGame(state); App.showHub();
   },
 
   doRest() {
     const p = state.player, c = state.career;
+    if (state.sport === 'basketball' && !bb.spendRestDay(state, basketballAdapter.teamsByLeague)) {
+      addLog(state, 'Spieltag — heute wird gespielt, nicht ausgeruht.', 'neutral');
+      saveGame(state);
+      return App.bbGameDay();
+    }
     p.energy = clamp(p.energy + state._rng.randInt(25, 45), 0, 100);
     p.morale = clamp(p.morale + state._rng.randInt(5, 15), 0, 100);
-    c.week++;
-    if (c.week > c.weeksPerSeason) { App.endSeason(); }
+    if (state.sport !== 'basketball') { c.week++; if (c.week > c.weeksPerSeason) { App.endSeason(); } }
     addLog(state, `Erholt. Energie +${25}, Moral +${10}`, 'neutral');
     saveGame(state); App.showHub();
   },
@@ -604,7 +637,23 @@ function _matchScreen(result) {
   // ── Football (and any future non-basketball sport) — UNCHANGED ──────────
   const cfg = getAdapter(state.sport);
   const isFootball = state.sport === 'football';
-  const eventsHtml = result.events.map(e => `<div class="match-event ${e.type}">${e.minute}' — ${e.text}</div>`).join('');
+  const eventsHtml = result.events.map(e => `<div class="match-event ${e.type}">${result.box ? e.minute : e.minute + "'"} — ${e.text}</div>`).join('');
+
+  const boxTable = (title, rows) => `
+    <div class="bb-box"><h4>${title}</h4><div class="bb-box-scroll"><table>
+      <thead><tr><th>Spieler</th><th>MIN</th><th>PTS</th><th>FG</th><th>3P</th><th>FT</th><th>REB</th><th>AST</th><th>STL</th><th>BLK</th><th>TO</th><th>PF</th><th>+/-</th></tr></thead>
+      <tbody>${rows.map(r => `<tr class="${r.human ? 'me' : ''}">
+        <td>${r.human ? '★ ' : ''}${r.name} <i>${r.role}</i></td>
+        <td>${r.min.toFixed(1)}</td><td><b>${r.pts}</b></td>
+        <td>${r.fgm}/${r.fga}</td><td>${r.tpm}/${r.tpa}</td><td>${r.ftm}/${r.fta}</td>
+        <td>${r.reb}</td><td>${r.ast}</td><td>${r.stl}</td><td>${r.blk}</td><td>${r.tov}</td><td>${r.pf}</td>
+        <td>${r.pm > 0 ? '+' : ''}${r.pm}</td></tr>`).join('')}</tbody></table></div></div>`;
+  const boxHtml = result.box
+    ? boxTable(state.career.teamName, result.box.home) + boxTable(result.opponent, result.box.away)
+    : '';
+  const projectedHtml = result.projected
+    ? `<p class="projected-note">Gespielt über ${(48 / result.projected.factor).toFixed(0)} Minuten — für Tabelle und Karriere auf 48 Minuten hochgerechnet (${result.projected.score}, ${result.projected.pts} PTS).</p>`
+    : '';
   return `<div class="screen match-screen">
     <div class="card">
       <div style="color:var(--muted);font-size:.8rem;margin-bottom:8px">${cfg.icon} ${cfg.name} — Spielbericht</div>
@@ -623,10 +672,12 @@ function _matchScreen(result) {
         Ergebnis: <strong style="color:${result.result==='win'?'var(--football)':result.result==='loss'?'var(--danger)':'var(--gold)'}">${result.result==='win'?'Sieg':result.result==='draw'?'Unentschieden':'Niederlage'}</strong>
         · pers. ${result.personal} ${cfg.scoreLabel} · ${result.assists} Assists
       </div>
+      ${projectedHtml}
       ${eventsHtml ? `<div class="match-events">${eventsHtml}</div>` : ''}
+      ${boxHtml}
       <div style="margin-top:10px;color:var(--gold)">+€${fmt(result.money)} verdient</div>
     </div>
-    <button class="btn btn-primary btn-block" onclick="App.showHub()">Weiter →</button>
+    <button class="btn btn-primary btn-block" onclick="App.${result.backTo || 'showHub'}()">Weiter →</button>
   </div>`;
 }
 
