@@ -775,6 +775,11 @@ const App = (() => {
       <div class="screen title-screen">
         <h1>🏟️ Sports Career</h1>
         <p class="subtitle">Starte deine Karriere als Profi-Sportler</p>
+        <div style="margin-bottom:20px">
+          <button class="btn btn-ghost" style="border-color:var(--gold);color:var(--gold);font-size:1rem;padding:12px 32px" onclick="App.showQuickGame()">
+            ⚡ Quick Game — sofort losspielen
+          </button>
+        </div>
         <div class="sport-cards">
           <div class="sport-card football" onclick="App.showCreate('football')">
             <span class="sport-icon">⚽</span>
@@ -801,6 +806,66 @@ const App = (() => {
         </div>` : ''}
       </div>
     `);
+  }
+
+  // ── SCREEN: QUICK GAME ──────────────────────────
+  function showQuickGame() {
+    render(`
+      <div class="screen">
+        <div class="card" style="text-align:center;padding:32px 24px">
+          <h2 style="margin-bottom:8px">⚡ Quick Game</h2>
+          <p style="color:var(--muted);margin-bottom:28px">Ein Spiel, kein Speichern, kein Setup — einfach spielen.</p>
+          <div class="sport-cards" style="max-width:400px;margin:0 auto 28px">
+            <div class="sport-card football" onclick="App.startQuickGame('football')">
+              <span class="sport-icon">⚽</span>
+              <h2>Fussball</h2>
+              <p>Schnelles Match</p>
+            </div>
+            <div class="sport-card basketball" onclick="App.startQuickGame('basketball')">
+              <span class="sport-icon">🏀</span>
+              <h2>Basketball</h2>
+              <p>Schnelles Match</p>
+            </div>
+          </div>
+          <button class="btn btn-ghost" onclick="App.showTitle()">← Zurück</button>
+        </div>
+      </div>
+    `);
+  }
+
+  function startQuickGame(sport) {
+    const cfg = CONFIG[sport];
+    const isBasketball = sport === 'basketball';
+    // Auto-generate a random player
+    const firstNames = ['Max', 'Leon', 'Felix', 'Luca', 'Noah', 'Elias', 'Jonas', 'Tim', 'Ben', 'Jan'];
+    const lastNames = ['Müller', 'Schmidt', 'Weber', 'Wagner', 'Fischer', 'Becker', 'Hoffmann', 'Koch', 'Richter', 'Klein'];
+    const name = firstNames[rand(0, firstNames.length-1)] + ' ' + lastNames[rand(0, lastNames.length-1)];
+    const pos = cfg.positions[rand(0, cfg.positions.length-1)];
+    // Temp state (not saved)
+    const baseStats = {};
+    cfg.stats.forEach(s => { baseStats[s] = isBasketball ? rand(45, 65) : rand(30, 55); });
+    const startLeague = cfg.startLeagueIndex ?? 0;
+    const teams = isBasketball ? cfg.teamsByLeague[startLeague] : cfg.teamNames;
+    const myTeam = teams[rand(0, teams.length-1)];
+    state = {
+      sport,
+      _quickGame: true,
+      player: {
+        name, position: pos, age: isBasketball ? rand(19,25) : rand(18,24),
+        energy: 100, morale: 80, fame: rand(10,30),
+        money: 0, totalEarned: 0,
+        stats: baseStats, skillPoints: 0,
+      },
+      career: {
+        leagueIndex: startLeague, teamName: myTeam,
+        season: 1, seasons: 0, week: 1, weeksPerSeason: 24,
+        wins: 0, losses: 0, draws: 0,
+        goals: 0, assists: 0, promotions: 0, relegations: 0, bestMatchGoals: 0,
+      },
+      achievements: [], log: [], seasonLog: [],
+    };
+    // Play match immediately
+    playMatch(true);
   }
 
   // ── SCREEN: CREATE PLAYER ─────────────────────────
@@ -1048,7 +1113,14 @@ const App = (() => {
             <div><span style="color:var(--muted);font-size:.8rem">Verdient</span><br><strong style="color:var(--gold)">+€${fmt(result.money)}</strong></div>
           </div>
           <div class="match-events">${eventsHtml}</div>
-          <button class="btn btn-primary btn-block" onclick="App.showHub('home')">← Zurück zur Übersicht</button>
+          ${state._quickGame ? `
+            <div style="display:flex;gap:12px;justify-content:center">
+              <button class="btn btn-primary" onclick="App.startQuickGame('${state.sport}')">⚡ Nochmal spielen</button>
+              <button class="btn btn-ghost" onclick="App.showTitle()">← Zum Menü</button>
+            </div>
+          ` : `
+            <button class="btn btn-primary btn-block" onclick="App.showHub('home')">← Zurück zur Übersicht</button>
+          `}
         </div>
       </div>
     `);
@@ -1093,8 +1165,8 @@ const App = (() => {
     showTitle();
   }
 
-  function playMatch() {
-    if (!state || state.player.energy < 15) {
+  function playMatch(skipEnergyCheck = false) {
+    if (!state || (!skipEnergyCheck && state.player.energy < 15)) {
       addLog('Zu müde für ein Spiel! Erst ausruhen.', 'bad');
       showHub('home');
       return;
@@ -1152,6 +1224,8 @@ const App = (() => {
     init,
     showTitle,
     showCreate,
+    showQuickGame,
+    startQuickGame,
     showHub,
     startGame,
     continueGame,
