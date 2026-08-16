@@ -306,11 +306,14 @@ const App = (() => {
         <div class="card live-match-card">
           <div class="live-scorebar">
             <div><small>HEIM</small><strong>${state.career.teamName}</strong></div>
-            <div class="live-score"><span id="live-home-score">0</span><i>:</i><span id="live-away-score">0</span></div>
+            <div class="live-score-center">
+              <div class="live-score"><span id="live-home-score">0</span><i>:</i><span id="live-away-score">0</span></div>
+              <small class="match-mode">11 VS 11 · 3D-KAMERA</small>
+            </div>
             <div class="live-away"><small>GAST</small><strong>${opponent}</strong></div>
           </div>
           <div class="live-pitch-wrap">
-            <canvas id="football-canvas" width="960" height="540" aria-label="Spielbares Fussballfeld"></canvas>
+            <canvas id="football-canvas" width="960" height="540" aria-label="Spielbares 3D-Fussballfeld mit 22 Spielern"></canvas>
             <div class="live-kickoff" id="live-kickoff">
               <span>KARRIERE-SPIEL</span>
               <h2>Bereit für den Anstoss?</h2>
@@ -392,12 +395,27 @@ const App = (() => {
     if (!canvas || !liveMatch) return;
     const context = canvas.getContext('2d');
     drawFootballPitch(context, canvas.width, canvas.height);
-    const preview = [
-      {x:110,y:270,team:'home',keeper:true,number:1,facing:0}, {x:310,y:170,team:'home',number:10,facing:0}, {x:390,y:350,team:'home',number:8,facing:0},
-      {x:850,y:270,team:'away',keeper:true,number:1,facing:Math.PI}, {x:650,y:170,team:'away',number:9,facing:Math.PI}, {x:570,y:350,team:'away',number:6,facing:Math.PI}
-    ];
-    preview.forEach((p, i) => drawFootballer(context, p, i === 1));
+    const preview = [...createFootballLineup('home',false),...createFootballLineup('away',false)];
+    preview.sort((a,b)=>a.y-b.y).forEach(p => drawFootballer(context,p,p.team==='home'&&p.number===10));
     drawFootball(context, {x:480,y:270,r:8});
+  }
+
+  function createFootballLineup(team,selectHuman=true) {
+    const formation=[
+      {x:105,y:270,number:1,role:'GK',keeper:true},
+      {x:225,y:100,number:2,role:'RB'},{x:225,y:210,number:4,role:'CB'},
+      {x:225,y:330,number:5,role:'CB'},{x:225,y:440,number:3,role:'LB'},
+      {x:410,y:150,number:8,role:'CM'},{x:410,y:270,number:10,role:'CAM'},
+      {x:410,y:390,number:6,role:'CM'},
+      {x:575,y:125,number:7,role:'RW'},{x:600,y:270,number:9,role:'ST'},
+      {x:575,y:415,number:11,role:'LW'}
+    ];
+    return formation.map(def=>{
+      const x=team==='home'?def.x:960-def.x;
+      return { ...def,x,y:def.y,homeX:x,homeY:def.y,team,r:def.keeper?17:13,vx:0,vy:0,
+        human:selectHuman&&team==='home'&&def.number===10,cooldown:0,
+        facing:team==='home'?0:Math.PI,stride:0 };
+    });
   }
 
   function startFootballMatch() {
@@ -407,15 +425,8 @@ const App = (() => {
     if (!canvas) return;
     kickoff?.remove();
 
-    const human = {x:300,y:270,homeX:300,homeY:270,team:'home',r:14,vx:0,vy:0,human:true,cooldown:0,number:10,facing:0,stride:0};
-    const players = [
-      {x:105,y:270,homeX:105,homeY:270,team:'home',r:17,keeper:true,cooldown:0,number:1,facing:0,stride:0},
-      human,
-      {x:360,y:150,homeX:360,homeY:150,team:'home',r:14,cooldown:0,number:8,facing:0,stride:0},
-      {x:855,y:270,homeX:855,homeY:270,team:'away',r:17,keeper:true,cooldown:0,number:1,facing:Math.PI,stride:0},
-      {x:660,y:270,homeX:660,homeY:270,team:'away',r:14,cooldown:0,number:9,facing:Math.PI,stride:0},
-      {x:600,y:390,homeX:600,homeY:390,team:'away',r:14,cooldown:0,number:6,facing:Math.PI,stride:0},
-    ];
+    const players=[...createFootballLineup('home'),...createFootballLineup('away')];
+    const human=players.find(p=>p.human);
     Object.assign(liveMatch, {
       phase:'playing', canvas, context:canvas.getContext('2d'), players, human,
       ball:{x:480,y:270,r:8,vx:0,vy:0,owner:null}, score:{home:0,away:0},
@@ -595,42 +606,69 @@ const App = (() => {
   function footballDistance(a,b){return Math.hypot(a.x-b.x,a.y-b.y);}
 
   function drawFootballMatch(m) {
-    drawFootballPitch(m.context,960,540);m.players.forEach(p=>drawFootballer(m.context,p,p.human));drawFootball(m.context,m.ball);
+    drawFootballPitch(m.context,960,540);
+    m.players.slice().sort((a,b)=>a.y-b.y).forEach(p=>drawFootballer(m.context,p,p.human));
+    drawFootball(m.context,m.ball);
   }
 
   function drawFootballPitch(context,w,h) {
-    const gradient=context.createLinearGradient(0,0,w,h);gradient.addColorStop(0,'#31733b');gradient.addColorStop(1,'#20542f');context.fillStyle=gradient;context.fillRect(0,0,w,h);
-    for(let i=0;i<10;i++){context.fillStyle=i%2?'rgba(255,255,255,.025)':'rgba(0,0,0,.035)';context.fillRect(i*w/10,0,w/10,h);}
-    context.strokeStyle='rgba(255,255,255,.72)';context.lineWidth=2;context.strokeRect(48,34,864,472);
-    context.beginPath();context.moveTo(480,34);context.lineTo(480,506);context.stroke();context.beginPath();context.arc(480,270,62,0,Math.PI*2);context.stroke();
-    context.strokeRect(48,160,120,220);context.strokeRect(792,160,120,220);context.strokeRect(48,205,45,130);context.strokeRect(867,205,45,130);
-    context.fillStyle='rgba(8,14,10,.45)';context.fillRect(32,205,16,130);context.fillRect(912,205,16,130);
+    const sky=context.createLinearGradient(0,0,0,160);sky.addColorStop(0,'#07131b');sky.addColorStop(1,'#26383e');context.fillStyle=sky;context.fillRect(0,0,w,h);
+    context.fillStyle='#202a2f';context.fillRect(0,42,w,92);
+    const crowd=['#eef1ef','#dfff53','#ef5c53','#4d78e0'];
+    for(let row=0;row<4;row++)for(let col=0;col<80;col++){context.fillStyle=crowd[(row*5+col*3)%crowd.length];context.globalAlpha=.52;context.beginPath();context.arc(col*12+(row%2)*5,61+row*17,2.1,0,Math.PI*2);context.fill();}
+    context.globalAlpha=1;context.fillStyle='#0f171a';context.fillRect(0,128,w,18);
+    const corners=[[48,34],[912,34],[912,506],[48,506]].map(([x,y])=>projectFootball3D(x,y));
+    const grass=context.createLinearGradient(0,corners[0].y,0,corners[2].y);grass.addColorStop(0,'#2e7d3b');grass.addColorStop(1,'#16552d');context.fillStyle=grass;fillProjectedShape(context,corners);
+    for(let i=0;i<10;i++){const x1=48+i*86.4,x2=x1+86.4;context.fillStyle=i%2?'rgba(255,255,255,.025)':'rgba(0,0,0,.06)';fillProjectedShape(context,[[x1,34],[x2,34],[x2,506],[x1,506]].map(([x,y])=>projectFootball3D(x,y)));}
+    context.strokeStyle='rgba(255,255,255,.78)';context.lineWidth=2;
+    strokeWorldLine(context,[[48,34],[912,34],[912,506],[48,506],[48,34]]);
+    strokeWorldLine(context,[[480,34],[480,506]]);
+    strokeWorldEllipse(context,480,270,62,62);
+    strokeWorldLine(context,[[48,160],[168,160],[168,380],[48,380]]);
+    strokeWorldLine(context,[[912,160],[792,160],[792,380],[912,380]]);
+    strokeWorldLine(context,[[48,205],[93,205],[93,335],[48,335]]);
+    strokeWorldLine(context,[[912,205],[867,205],[867,335],[912,335]]);
+    drawGoal3D(context,'home');drawGoal3D(context,'away');
+  }
+
+  function projectFootball3D(x,y,z=0) {
+    const depth=clamp((y-34)/472,0,1),scale=.7+depth*.35;
+    return {x:480+(x-480)*scale,y:108+depth*394-z*scale,scale,depth};
+  }
+
+  function fillProjectedShape(context,points){context.beginPath();points.forEach((p,i)=>i?context.lineTo(p.x,p.y):context.moveTo(p.x,p.y));context.closePath();context.fill();}
+  function strokeWorldLine(context,points){context.beginPath();points.forEach(([x,y],i)=>{const p=projectFootball3D(x,y);i?context.lineTo(p.x,p.y):context.moveTo(p.x,p.y);});context.stroke();}
+  function strokeWorldEllipse(context,cx,cy,rx,ry){const points=[];for(let i=0;i<=40;i++){const a=i/40*Math.PI*2;points.push([cx+Math.cos(a)*rx,cy+Math.sin(a)*ry]);}strokeWorldLine(context,points);}
+
+  function drawGoal3D(context,team){
+    const x=team==='home'?48:912,backX=team==='home'?20:940,top=205,bottom=335,height=30;
+    const a=projectFootball3D(x,top),b=projectFootball3D(x,bottom),at=projectFootball3D(x,top,height),bt=projectFootball3D(x,bottom,height),c=projectFootball3D(backX,top,height),d=projectFootball3D(backX,bottom,height);
+    context.strokeStyle='rgba(242,246,244,.88)';context.lineWidth=3;context.beginPath();context.moveTo(a.x,a.y);context.lineTo(at.x,at.y);context.lineTo(bt.x,bt.y);context.lineTo(b.x,b.y);context.moveTo(at.x,at.y);context.lineTo(c.x,c.y);context.lineTo(d.x,d.y);context.lineTo(bt.x,bt.y);context.stroke();
+    context.strokeStyle='rgba(220,230,225,.24)';context.lineWidth=1;for(let i=1;i<5;i++){const y=top+(bottom-top)*i/5,front=projectFootball3D(x,y,height),back=projectFootball3D(backX,y,height);context.beginPath();context.moveTo(front.x,front.y);context.lineTo(back.x,back.y);context.stroke();}
   }
 
   function drawFootballer(context,p,selected) {
-    const angle=Number.isFinite(p.facing)?p.facing:(p.team==='home'?0:Math.PI);
+    const projected=projectFootball3D(p.x,p.y),scale=projected.scale*(p.keeper?1.04:1);
     const moving=Math.hypot(p.vx||0,p.vy||0)>8;
-    const step=moving?Math.sin(p.stride||0)*3:0;
+    const step=moving?Math.sin(p.stride||0)*3.5:0;
     const kit=p.keeper?'#f2a900':p.team==='home'?'#dfff53':'#4267d6';
     const trim=p.keeper?'#211b0c':p.team==='home'?'#142016':'#d5ddff';
     const skin=p.team==='home'?'#d7a071':'#9a6548';
-    context.save();context.translate(p.x,p.y);context.rotate(angle);
-    context.fillStyle='rgba(0,0,0,.3)';context.beginPath();context.ellipse(-2,7,p.r+7,p.r*.72,0,0,Math.PI*2);context.fill();
-    context.strokeStyle=trim;context.lineWidth=5;context.lineCap='round';
-    context.beginPath();context.moveTo(-8,-3);context.lineTo(-15,-10+step);context.moveTo(-8,4);context.lineTo(-15,12-step);context.stroke();
-    context.strokeStyle=skin;context.lineWidth=4;
-    context.beginPath();context.moveTo(0,-8);context.lineTo(3,-17-step*.35);context.moveTo(0,8);context.lineTo(3,17+step*.35);context.stroke();
-    context.fillStyle=kit;context.strokeStyle=trim;context.lineWidth=2;context.beginPath();context.moveTo(-10,-10);context.quadraticCurveTo(2,-14,10,-8);context.lineTo(10,8);context.quadraticCurveTo(2,14,-10,10);context.closePath();context.fill();context.stroke();
-    context.fillStyle=trim;context.font='800 8px system-ui';context.textAlign='center';context.textBaseline='middle';context.fillText(String(p.number||7),0,0);
-    context.fillStyle=skin;context.strokeStyle='rgba(44,26,17,.75)';context.lineWidth=1.5;context.beginPath();context.arc(12,0,p.r*.47,0,Math.PI*2);context.fill();context.stroke();
-    context.fillStyle='#332319';context.beginPath();context.arc(13,0,p.r*.38,Math.PI*.75,Math.PI*1.25);context.lineTo(12,0);context.fill();
-    context.fillStyle=trim;context.beginPath();context.ellipse(-16,-10+step,4,2.6,0,0,Math.PI*2);context.ellipse(-16,12-step,4,2.6,0,0,Math.PI*2);context.fill();
+    context.save();context.translate(projected.x,projected.y);context.scale(scale,scale);
+    context.fillStyle='rgba(0,0,0,.32)';context.beginPath();context.ellipse(0,2,12,4.5,0,0,Math.PI*2);context.fill();
+    context.strokeStyle=trim;context.lineWidth=4;context.lineCap='round';context.beginPath();context.moveTo(-4,-5);context.lineTo(-6+step*.35,4);context.moveTo(4,-5);context.lineTo(6-step*.35,4);context.stroke();
+    context.strokeStyle=skin;context.lineWidth=3.2;context.beginPath();context.moveTo(-8,-24);context.lineTo(-13,-11-step*.25);context.moveTo(8,-24);context.lineTo(13,-11+step*.25);context.stroke();
+    context.fillStyle=kit;context.strokeStyle=trim;context.lineWidth=1.5;context.beginPath();context.roundRect(-9,-32,18,27,5);context.fill();context.stroke();
+    context.fillStyle=trim;context.font='800 7px system-ui';context.textAlign='center';context.textBaseline='middle';context.fillText(String(p.number||7),0,-19);
+    context.fillStyle=skin;context.strokeStyle='rgba(44,26,17,.7)';context.lineWidth=1;context.beginPath();context.arc(0,-39,6.3,0,Math.PI*2);context.fill();context.stroke();
+    context.fillStyle='#332319';context.beginPath();context.arc(0,-41,5.5,Math.PI,Math.PI*2);context.fill();
     context.restore();
-    if(selected){context.strokeStyle='#fff';context.lineWidth=2;context.beginPath();context.arc(p.x,p.y,p.r+10,0,Math.PI*2);context.stroke();context.fillStyle='#fff';context.beginPath();context.moveTo(p.x-5,p.y-p.r-16);context.lineTo(p.x+5,p.y-p.r-16);context.lineTo(p.x,p.y-p.r-9);context.fill();}
+    if(selected){context.strokeStyle='#fff';context.lineWidth=2;context.beginPath();context.ellipse(projected.x,projected.y,17*scale,7*scale,0,0,Math.PI*2);context.stroke();context.fillStyle='#fff';context.beginPath();context.moveTo(projected.x-5,projected.y-51*scale);context.lineTo(projected.x+5,projected.y-51*scale);context.lineTo(projected.x,projected.y-44*scale);context.fill();}
   }
 
   function drawFootball(context,b) {
-    context.fillStyle='rgba(0,0,0,.3)';context.beginPath();context.ellipse(b.x+2,b.y+5,b.r+2,b.r*.55,0,0,Math.PI*2);context.fill();context.fillStyle='#fff';context.beginPath();context.arc(b.x,b.y,b.r,0,Math.PI*2);context.fill();context.fillStyle='#111';context.beginPath();context.arc(b.x,b.y,2.5,0,Math.PI*2);context.fill();
+    const speed=Math.hypot(b.vx||0,b.vy||0),height=b.owner?4:Math.min(12,speed*.022),ground=projectFootball3D(b.x,b.y),p=projectFootball3D(b.x,b.y,height),size=6.5*p.scale;
+    context.fillStyle='rgba(0,0,0,.3)';context.beginPath();context.ellipse(ground.x,ground.y,7*ground.scale,3*ground.scale,0,0,Math.PI*2);context.fill();context.fillStyle='#fff';context.beginPath();context.arc(p.x,p.y,size,0,Math.PI*2);context.fill();context.strokeStyle='#c8cec9';context.lineWidth=1;context.stroke();context.fillStyle='#111';context.beginPath();context.arc(p.x,p.y,size*.3,0,Math.PI*2);context.fill();
   }
 
   function endSeason() {
