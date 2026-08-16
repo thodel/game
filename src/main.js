@@ -9,6 +9,7 @@ import { footballAdapter }   from './sports/football/index.js';
 import { basketballAdapter } from './sports/basketball/index.js';
 import { render, renderStats, renderSeasonBar, statColor } from './ui/dom.js';
 import { addLog }               from './ui/log.js';
+import { generatePlayByPlay, generateQuarterScores } from './ui/commentary.js';
 
 let state = null;
 let liveMatch = null;
@@ -599,6 +600,8 @@ function _actionsScreen() {
 }
 
 function _matchScreen(result) {
+  if (state.sport === 'basketball') return _basketballMatchScreen(result);
+  // ── Football (and any future non-basketball sport) — UNCHANGED ──────────
   const cfg = getAdapter(state.sport);
   const isFootball = state.sport === 'football';
   const eventsHtml = result.events.map(e => `<div class="match-event ${e.type}">${e.minute}' — ${e.text}</div>`).join('');
@@ -622,6 +625,106 @@ function _matchScreen(result) {
       </div>
       ${eventsHtml ? `<div class="match-events">${eventsHtml}</div>` : ''}
       <div style="margin-top:10px;color:var(--gold)">+€${fmt(result.money)} verdient</div>
+    </div>
+    <button class="btn btn-primary btn-block" onclick="App.showHub()">Weiter →</button>
+  </div>`;
+}
+
+// ── Basketball broadcast match screen ──────────────────────────────────────
+function _basketballMatchScreen(result) {
+  const cfg      = getAdapter(state.sport);
+  const teamName = state.career.teamName;
+  const oppName  = result.opponent;
+  const homeTotal = (result.playerGoals || 0) + 50;
+  const awayTotal = (result.oppGoals    || 0) + 50;
+
+  // Deterministic display RNG (does NOT advance the game-state RNG)
+  const dSeed = ((result.playerGoals || 0) * 2654435761 + (result.oppGoals || 0) * 1013904223 + ((result.money || 0) & 0xffff)) >>> 0;
+  const drng  = createRNG(dSeed || 42);
+
+  // Quarter scores — generated ONCE and shared with play-by-play so markers are consistent
+  const homeQs = generateQuarterScores(homeTotal, drng);
+  const awayQs = generateQuarterScores(awayTotal, drng);
+
+  // Play-by-play commentary
+  const { html: pbpHtml, lastPlayerEventText } = generatePlayByPlay(result.events, result, state, drng, homeQs, awayQs);
+
+  // Linescore abbreviations (last word of team name, 3 chars)
+  const homeAbbr = teamName.split(' ').pop().slice(0, 3).toUpperCase();
+  const awayAbbr = oppName.split(' ').pop().slice(0, 3).toUpperCase();
+  const leagueName = cfg.leagues[state.career.leagueIndex] || cfg.name;
+
+  const linescoreHtml =
+    `<div class="broadcast-linescore">` +
+      `<div class="team-col"></div>` +
+      `<div class="q-col">Q1</div><div class="q-col">Q2</div><div class="q-col">Q3</div><div class="q-col">Q4</div>` +
+      `<div class="total-col">TOT</div>` +
+      `<div class="team-col">◼ ${homeAbbr}</div>` +
+      homeQs.map(s => `<div class="q-col">${s}</div>`).join('') +
+      `<div class="total-col">${homeTotal}</div>` +
+      `<div class="team-col">◼ ${awayAbbr}</div>` +
+      awayQs.map(s => `<div class="q-col">${s}</div>`).join('') +
+      `<div class="total-col">${awayTotal}</div>` +
+    `</div>` +
+    `<div style="margin-top:6px;font-size:.75rem;color:var(--muted)">${teamName} vs. ${oppName} · ${leagueName}</div>`;
+
+  // Result banner
+  const bannerClass = result.result === 'win' ? 'win' : result.result === 'loss' ? 'loss' : 'draw';
+  const bannerText  = result.result === 'win'  ? `🏆 SIEG! +€${fmt(result.money)}`
+                    : result.result === 'loss' ? '😤 NIEDERLAGE'
+                    : `🤝 UNENTSCHIEDEN +€${fmt(result.money)}`;
+
+  // Box score
+  const BFIRST = ['T.','M.','K.','D.','J.','R.','A.','B.','L.','N.'];
+  const BLAST  = ['Weber','Müller','Fischer','Schmidt','Koch','Wagner','Bauer','Richter','Klein','Wolf'];
+  const usedLast = new Set();
+  const genTm = () => {
+    let ln; do { ln = BLAST[drng.randInt(0, BLAST.length - 1)]; } while (usedLast.has(ln));
+    usedLast.add(ln);
+    return { name: `${BFIRST[drng.randInt(0, BFIRST.length - 1)]} ${ln}`, min: drng.randInt(15, 32), pts: drng.randInt(4, 20), ast: drng.randInt(1, 6), reb: drng.randInt(2, 9) };
+  };
+  const teammates = [genTm(), genTm(), genTm(), genTm()];
+  const humanRow  = { name: state.player.name, min: drng.randInt(28, 40), pts: result.personal, ast: result.assists, reb: drng.randInt(2, 10) };
+
+  const OFIRST = ['K.','J.','M.','A.','D.','R.'];
+  const OLAST  = ['Johnson','Williams','Brown','Davis','Miller','Wilson'];
+  const oppStarName = `${OFIRST[drng.randInt(0, OFIRST.length-1)]} ${OLAST[drng.randInt(0, OLAST.length-1)]}`;
+  const oppStar = {
+    name: `★ ${oppStarName} (${awayAbbr})`,
+    min:  result.result === 'loss' ? drng.randInt(36, 42) : drng.randInt(28, 36),
+    pts:  result.result === 'loss' ? drng.randInt(26, 40) : drng.randInt(12, 24),
+    ast:  result.result === 'loss' ? drng.randInt(6, 12)  : drng.randInt(2, 7),
+    reb:  result.result === 'loss' ? drng.randInt(8, 14)  : drng.randInt(3, 8),
+  };
+
+  const mkRow = (p, cls = '') =>
+    `<tr${cls ? ` class="${cls}"` : ''}><td>${p.name}</td><td>${p.min}</td><td>${p.pts}</td><td>${p.ast}</td><td>${p.reb}</td></tr>`;
+
+  const boxScoreHtml =
+    `<table class="box-score">` +
+      `<thead><tr><th>Spieler</th><th>MIN</th><th>PTS</th><th>AST</th><th>REB</th></tr></thead>` +
+      `<tbody>` +
+        mkRow(humanRow, 'human-row') +
+        teammates.map(t => mkRow(t)).join('') +
+        `<tr style="opacity:.7">${mkRow(oppStar).replace(/^<tr[^>]*>/, '').replace(/<\/tr>$/, '')}</tr>` +
+      `</tbody>` +
+    `</table>`;
+
+  // Replay hint — last player-type event restated dramatically
+  const replayHtml = lastPlayerEventText
+    ? `<div style="margin:10px 0;color:var(--muted);font-size:.83rem;font-style:italic">🎬 Replay: ${lastPlayerEventText}</div>`
+    : '';
+
+  return `<div class="screen match-screen">
+    <div class="card">
+      <div class="broadcast-header">${linescoreHtml}</div>
+      <div class="result-banner ${bannerClass}">
+        <div style="font-size:1.6rem;font-weight:900">${bannerText}</div>
+        <div style="font-size:.85rem;color:var(--muted);margin-top:4px">Pers. ${result.personal} Punkte · ${result.assists} Assists</div>
+      </div>
+      ${pbpHtml ? `<div class="match-events" style="max-height:340px;overflow-y:auto">${pbpHtml}</div>` : ''}
+      ${replayHtml}
+      ${boxScoreHtml}
     </div>
     <button class="btn btn-primary btn-block" onclick="App.showHub()">Weiter →</button>
   </div>`;
