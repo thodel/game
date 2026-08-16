@@ -199,6 +199,35 @@ body {
 .match-event.player { background: #2ea04322; color: #3fb950; }
 .match-event.opponent { background: #f8514922; color: var(--danger); }
 
+/* ===== INTERACTIVE FOOTBALL MATCH ===== */
+.live-match-card { padding: 0; overflow: hidden; }
+.live-scorebar { min-height: 76px; padding: 12px 22px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; border-bottom: 1px solid var(--border); }
+.live-scorebar small { display: block; color: var(--muted); font-size: .65rem; letter-spacing: .12em; margin-bottom: 4px; }
+.live-scorebar strong { font-size: .95rem; }
+.live-away { text-align: right; }
+.live-score { display: flex; gap: 10px; align-items: center; font-size: 2rem; font-weight: 900; }
+.live-score i { color: var(--muted); font-style: normal; font-size: 1rem; }
+.live-pitch-wrap { position: relative; background: #245c31; aspect-ratio: 16/9; }
+#football-canvas { display: block; width: 100%; height: 100%; }
+.live-kickoff { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; background: rgba(8,15,10,.72); backdrop-filter: blur(2px); }
+.live-kickoff span { color: #dfff53; font-size: .65rem; font-weight: 800; letter-spacing: .16em; }
+.live-kickoff h2 { margin: 8px 0 4px; font-size: clamp(1.4rem,4vw,2.5rem); }
+.live-kickoff p { color: var(--muted); margin-bottom: 18px; }
+.live-message { position: absolute; inset: 0; pointer-events: none; display: grid; place-items: center; color: #dfff53; font-size: clamp(2rem,8vw,5rem); font-weight: 900; text-shadow: 0 5px 30px #000; opacity: 0; transition: opacity .2s; }
+.live-message.show { opacity: 1; }
+.live-controls { min-height: 52px; padding: 10px 18px; display: flex; gap: 20px; align-items: center; color: var(--muted); font-size: .72rem; border-top: 1px solid var(--border); }
+.live-controls kbd { padding: 3px 6px; color: var(--text); background: var(--surface2); border: 1px solid #4b535d; border-radius: 3px; font: inherit; }
+.live-controls b { margin-left: auto; color: #dfff53; font-family: monospace; font-size: 1rem; }
+.live-cancel { margin: 0 18px 16px; }
+
+@media (max-width: 600px) {
+  .live-scorebar { padding: 10px; min-height: 64px; }
+  .live-scorebar strong { font-size: .72rem; }
+  .live-score { font-size: 1.5rem; }
+  .live-controls span { display: none; }
+  .live-pitch-wrap { aspect-ratio: 4/3; }
+}
+
 /* ===== TABLE ===== */
 .table { width: 100%; border-collapse: collapse; font-size: .9rem; }
 .table th { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .5px; }
