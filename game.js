@@ -29,13 +29,23 @@ const App = (() => {
       color: 'basketball',
       positions: ['Point Guard', 'Shooting Guard', 'Small Forward', 'Power Forward', 'Center'],
       stats: ['Speed', 'Ballhandling', '3-Pointer', 'Defense', 'Dunks', 'IQ'],
-      leagues: ['Street League', 'D-Liga', 'Regionalliga', 'Pro B', 'BBL', 'Euroleague', 'NBA'],
+      // NBA-first: index 0 = G-League (relegation), index 1 = NBA (start)
+      leagues: ['G-League', 'NBA'],
+      startLeagueIndex: 1, // players start in NBA
       matchEvents: {
-        player: ['3-Pointer! 🎯', 'Slam Dunk! 💥', 'No-Look Pass 😎', 'Steal + Layup ⚡', 'And-One! 🔥'],
-        opponent: ['Blocked! 🛡️', 'Turnover 😤', 'Foul Trouble ⚠️'],
-        neutral: ['Buzzer-Beater 🚨', 'Overtime! ⏱️', 'Technical Foul 😤', 'Timeout called ⏸️'],
+        player: ['3-Pointer! 🎯', 'Slam Dunk! 💥', 'No-Look Pass 😎', 'Steal + Layup ⚡', 'And-One! 🔥', 'Game-Winner! 🚨', 'Triple-Double night 📊'],
+        opponent: ['Blocked! 🛡️', 'Turnover 😤', 'Foul Trouble ⚠️', 'Benched by coach 🪑'],
+        neutral: ['Buzzer-Beater 🚨', 'Overtime! ⏱️', 'Technical Foul 😤', 'Timeout called ⏸️', 'Replay Review 📺'],
       },
-      teamNames: ['Berlin Albatrosse', 'München Towers', 'Frankfurt Skyliners', 'Hamburg Towers', 'Bonn Telekom Baskets', 'Ulm Ratiopharm', 'Ludwigsburg MHP RIESEN', 'Heidelberg', 'Bamberg Brose', 'Göttingen Veilchen', 'Vechta Rasta', 'Quakenbrück Artland', 'Giessen 46ers', 'Oldenburg EWE Baskets'],
+      // Index 0: G-League teams, Index 1: NBA teams
+      teamsByLeague: [
+        // G-League
+        ['Lakeland Magic', 'Westchester Knicks', 'Long Island Nets', 'Stockton Kings', 'Santa Cruz Warriors', 'Capital City Go-Go', 'Windy City Bulls', 'Cleveland Charge', 'Fort Wayne Mad Ants', 'Grand Rapids Gold', 'Iowa Wolves', 'Memphis Hustle', 'Motor City Cruise', 'Oklahoma City Blue', 'Osceola Magic', 'Raptors 905', 'Rio Grande Valley Vipers', 'Salt Lake City Stars', 'Sioux Falls Skyforce', 'South Bay Lakers', 'Spurs Austin', 'Texas Legends', 'Agua Caliente Clippers', 'Birmingham Squadron', 'Delaware Blue Coats'],
+        // NBA
+        ['Lakers', 'Celtics', 'Warriors', 'Bulls', 'Heat', 'Knicks', 'Nets', 'Bucks', 'Suns', 'Clippers', 'Nuggets', 'Mavericks', 'Spurs', 'Rockets', 'Thunder', 'Blazers', 'Jazz', 'Timberwolves', 'Kings', 'Pelicans', 'Grizzlies', 'Pacers', '76ers', 'Raptors', 'Cavaliers', 'Magic', 'Hornets', 'Hawks', 'Wizards', 'Pistons'],
+      ],
+      // kept for compat (used in team-pick fallback)
+      teamNames: ['Lakers', 'Celtics', 'Warriors', 'Bulls', 'Heat', 'Knicks', 'Nets', 'Bucks', 'Suns', 'Clippers', 'Nuggets', 'Mavericks', 'Spurs', 'Rockets', 'Thunder', 'Blazers', 'Jazz', 'Timberwolves', 'Kings', 'Pelicans'],
     },
   };
 
@@ -45,7 +55,11 @@ const App = (() => {
     { id: 'hat_trick', name: 'Hattrick-Held', desc: '3+ Tore in einem Spiel', icon: '⚽⚽⚽', check: s => s.career.bestMatchGoals >= 3 },
     { id: 'promoted', name: 'Aufsteiger', desc: 'Erste Liga-Beförderung', icon: '📈', check: s => s.career.promotions >= 1 },
     { id: 'mvp', name: 'MVP', desc: '10+ Spiele gewonnen', icon: '🌟', check: s => s.career.wins >= 10 },
-    { id: 'legend', name: 'Legende', desc: 'Top-Liga erreicht (Liga 6)', icon: '👑', check: s => s.career.leagueIndex >= 5 },
+    { id: 'legend', name: 'Legende', desc: 'Top-Liga erreicht', icon: '👑', check: s => s.sport === 'football' ? s.career.leagueIndex >= 5 : s.career.leagueIndex >= 1 },
+    { id: 'nba_comeback', name: 'NBA Comeback', desc: 'Nach G-League wieder in die NBA aufgestiegen', icon: '💪', check: s => s.sport === 'basketball' && s.career.promotions >= 1 },
+    { id: 'g_league', name: 'G-League Grind', desc: 'In die G-League abgestiegen', icon: '😤', check: s => s.sport === 'basketball' && s.career.relegations >= 1 },
+    { id: 'nba_star', name: 'NBA Star', desc: '3 Saisons in der NBA überlebt', icon: '⭐', check: s => s.sport === 'basketball' && s.career.leagueIndex === 1 && s.career.seasons >= 3 },
+    { id: 'max_contract', name: 'Max Contract', desc: '10 Mio. € verdient', icon: '💎', check: s => s.sport === 'basketball' && s.player.totalEarned >= 10000000 },
     { id: 'veteran', name: 'Veteran', desc: '5 Saisons gespielt', icon: '🎖️', check: s => s.career.seasons >= 5 },
     { id: 'rich', name: 'Millionär', desc: '1.000.000 € verdient', icon: '💰', check: s => s.player.totalEarned >= 1000000 },
   ];
@@ -70,25 +84,29 @@ const App = (() => {
 
   function newState(sport, playerName, position) {
     const cfg = CONFIG[sport];
+    const isBasketball = sport === 'basketball';
     const baseStats = {};
-    cfg.stats.forEach(s => { baseStats[s] = rand(20, 40); });
+    // Basketball: start with higher stats (NBA-level rookie)
+    cfg.stats.forEach(s => { baseStats[s] = isBasketball ? rand(45, 65) : rand(20, 40); });
+    const startLeague = cfg.startLeagueIndex ?? 0;
+    const startTeams = isBasketball ? cfg.teamsByLeague[startLeague] : cfg.teamNames;
     return {
       sport,
       player: {
         name: playerName,
         position,
-        age: 17,
+        age: isBasketball ? rand(19, 22) : 17,
         energy: 100,
         morale: 75,
-        fame: 0,
-        money: 500,
-        totalEarned: 0,
+        fame: isBasketball ? rand(20, 40) : 0,
+        money: isBasketball ? rand(500000, 2000000) : 500,
+        totalEarned: isBasketball ? 0 : 0,
         stats: baseStats,
-        skillPoints: 3,
+        skillPoints: isBasketball ? 2 : 3,
       },
       career: {
-        leagueIndex: 0,
-        teamName: cfg.teamNames[0],
+        leagueIndex: startLeague,
+        teamName: startTeams[rand(0, startTeams.length - 1)],
         season: 1,
         seasons: 0,
         week: 1,
@@ -196,18 +214,30 @@ const App = (() => {
     }
     events.sort((a, b) => a.minute - b.minute);
 
-    // Opponent name
-    const oppNames = cfg.teamNames.filter(n => n !== c.teamName);
+    // Opponent name — for basketball use per-league team list
+    const bbCfg = CONFIG[state.sport];
+    const leagueTeams = bbCfg.teamsByLeague
+      ? bbCfg.teamsByLeague[c.leagueIndex] || bbCfg.teamNames
+      : bbCfg.teamNames;
+    const oppNames = leagueTeams.filter(n => n !== c.teamName);
     const opponent = oppNames[rand(0, oppNames.length - 1)];
 
     // Result
     let result, money;
+    const isNBA = state.sport === 'basketball' && state.career.leagueIndex === 1;
+    const isGLeague = state.sport === 'basketball' && state.career.leagueIndex === 0;
     if (playerGoals > oppGoals) {
-      result = 'win'; c.wins++; money = rand(800, 2000) * (c.leagueIndex + 1);
+      result = 'win';
+      c.wins++;
+      money = isNBA ? rand(80000, 250000) : isGLeague ? rand(3000, 8000) : rand(800, 2000) * (c.leagueIndex + 1);
     } else if (playerGoals === oppGoals) {
-      result = 'draw'; c.draws++; money = rand(200, 600) * (c.leagueIndex + 1);
+      result = 'draw';
+      c.draws++;
+      money = isNBA ? rand(30000, 80000) : isGLeague ? rand(1000, 3000) : rand(200, 600) * (c.leagueIndex + 1);
     } else {
-      result = 'loss'; c.losses++; money = rand(100, 400) * (c.leagueIndex + 1);
+      result = 'loss';
+      c.losses++;
+      money = isNBA ? rand(15000, 50000) : isGLeague ? rand(500, 1500) : rand(100, 400) * (c.leagueIndex + 1);
     }
 
     c.goals += personal;
@@ -490,27 +520,50 @@ const App = (() => {
 
     // Promotion / Relegation
     const winRate = c.wins / Math.max(c.wins + c.losses + c.draws, 1);
-    if (winRate >= 0.55 && c.leagueIndex < CONFIG[state.sport].leagues.length - 1) {
+    const cfg = CONFIG[state.sport];
+    const isBasketball = state.sport === 'basketball';
+    // Basketball: harder to stay in NBA (need >40%), G-League promotion needs >60%
+    const promotionThreshold = isBasketball ? 0.60 : 0.55;
+    const relegationThreshold = isBasketball ? 0.38 : 0.30;
+
+    if (winRate >= promotionThreshold && c.leagueIndex < cfg.leagues.length - 1) {
       c.leagueIndex++;
       c.promotions++;
-      // New team
-      const teams = CONFIG[state.sport].teamNames;
-      c.teamName = teams[rand(Math.min(c.leagueIndex * 2, teams.length - 3), Math.min(c.leagueIndex * 2 + 4, teams.length - 1))];
-      addLog(`Aufgestiegen! Jetzt in der ${leagueName(state)} 🎉`, 'special');
-    } else if (winRate < 0.3 && c.leagueIndex > 0) {
+      const teams = isBasketball ? cfg.teamsByLeague[c.leagueIndex] : cfg.teamNames;
+      c.teamName = teams[rand(0, teams.length - 1)];
+      if (isBasketball) {
+        addLog(`NBA Comeback! Zurück in der NBA bei den ${c.teamName}! 🏀🔥`, 'special');
+      } else {
+        addLog(`Aufgestiegen! Jetzt in der ${leagueName(state)} 🎉`, 'special');
+      }
+    } else if (winRate < relegationThreshold && c.leagueIndex > 0) {
       c.leagueIndex--;
       c.relegations++;
-      addLog(`Abgestiegen in die ${leagueName(state)} 😤`, 'bad');
+      const teams = isBasketball ? cfg.teamsByLeague[c.leagueIndex] : cfg.teamNames;
+      c.teamName = teams[rand(0, teams.length - 1)];
+      if (isBasketball && c.leagueIndex === 0) {
+        addLog(`Abgestiegen in die G-League (${c.teamName}). Kämpf dich zurück! 😤`, 'bad');
+      } else {
+        addLog(`Abgestiegen in die ${leagueName(state)} 😤`, 'bad');
+      }
     } else {
-      addLog(`Saison ${c.season - 1} abgeschlossen. Bleibst in der ${leagueName(state)}.`, 'neutral');
+      if (isBasketball && c.leagueIndex === 1) {
+        addLog(`NBA-Saison ${c.season - 1} überstanden. Vertrag verlängert bei den ${c.teamName}. 💰`, 'neutral');
+      } else if (isBasketball && c.leagueIndex === 0) {
+        addLog(`G-League Saison abgeschlossen (${Math.round(winRate * 100)}% Siege). Noch nicht gut genug für NBA.`, 'neutral');
+      } else {
+        addLog(`Saison ${c.season - 1} abgeschlossen. Bleibst in der ${leagueName(state)}.`, 'neutral');
+      }
     }
 
     // Reset season stats
     c.wins = 0; c.losses = 0; c.draws = 0;
     c.seasonLog = [];
 
-    // Bonus money
-    const bonus = rand(2000, 8000) * (c.leagueIndex + 1);
+    // Bonus money — NBA scale vs G-League scale
+    const bonus = isBasketball
+      ? (c.leagueIndex === 1 ? rand(1500000, 5000000) : rand(50000, 150000))
+      : rand(2000, 8000) * (c.leagueIndex + 1);
     p.money += bonus;
     p.totalEarned += bonus;
   }
@@ -605,7 +658,7 @@ const App = (() => {
           <div class="sport-card basketball" onclick="App.showCreate('basketball')">
             <span class="sport-icon">🏀</span>
             <h2>Basketball</h2>
-            <p>Street League bis NBA</p>
+            <p>NBA-Rookie — oder G-League Grind?</p>
           </div>
         </div>
         ${saved ? `
@@ -664,6 +717,48 @@ const App = (() => {
     };
   }
 
+  // ── NBA STATUS CARD ────────────────────────────────
+  function renderNBAStatus() {
+    const c = state.career;
+    const isNBA = c.leagueIndex === 1;
+    const total = c.wins + c.losses + c.draws;
+    const winRate = total > 0 ? Math.round(c.wins / total * 100) : 0;
+    const threshold = isNBA ? 38 : 60;
+    const direction = isNBA ? 'Abstiegszone' : 'Aufstiegszone';
+    const color = isNBA ? 'var(--danger)' : 'var(--gold)';
+    const dangerZone = isNBA ? winRate < threshold : winRate >= threshold;
+
+    return `
+      <div class="card" style="border-color:${isNBA ? 'var(--basketball)' : 'var(--muted)'}">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+          <div>
+            <div style="font-size:1rem;font-weight:800">
+              ${isNBA ? '🏀 NBA — ' + c.teamName : '😤 G-League — ' + c.teamName}
+            </div>
+            <div style="color:var(--muted);font-size:.82rem;margin-top:3px">
+              ${isNBA
+                ? `Bleib über ${threshold}% Siege um deinen Vertrag zu halten`
+                : `Übertriff ${threshold}% Siege für einen NBA-Recall`}
+            </div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:1.4rem;font-weight:900;color:${dangerZone ? color : 'var(--text)'}">${winRate}%</div>
+            <div style="font-size:.75rem;color:var(--muted)">Win Rate</div>
+          </div>
+        </div>
+        ${total > 0 ? `
+        <div style="margin-top:10px">
+          <div class="season-progress"><div class="season-fill" style="width:${winRate}%;background:${isNBA && winRate < threshold ? 'var(--danger)' : winRate >= threshold && !isNBA ? 'var(--gold)' : 'var(--accent)'}"></div></div>
+          <div style="display:flex;justify-content:space-between;font-size:.72rem;color:var(--muted);margin-top:3px">
+            <span>0%</span>
+            <span style="color:${color}">▼ ${threshold}% ${direction}</span>
+            <span>100%</span>
+          </div>
+        </div>` : ''}
+      </div>
+    `;
+  }
+
   // ── SCREEN: MAIN HUB ─────────────────────────────
   function showHub(activeTab = 'home') {
     const p = state.player;
@@ -692,6 +787,7 @@ const App = (() => {
 
       content = `
         ${renderSeasonBar()}
+        ${state.sport === 'basketball' ? renderNBAStatus() : ''}
         <div class="card">
           <h3 style="margin-bottom:16px">⚡ Aktionen</h3>
           <div class="actions-grid">
