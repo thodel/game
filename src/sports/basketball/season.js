@@ -316,6 +316,8 @@ export const SeasonEngine = (() => {
   }
 
   function recordSeriesGame(season, series, game, hs, as) {
+    // A decided series takes no further games, however it was reached
+    if (series.winner !== null) return series.winner;
     const winnerId = hs > as ? game.home : game.away;
     series.games.push({ n: game.n, home: game.home, away: game.away, hs, as });
     if (winnerId === series.hi) series.wins.hi++; else series.wins.lo++;
@@ -458,8 +460,10 @@ export const SeasonEngine = (() => {
 
   // Record a result the player actually played.
   function recordPlayerPlayoffGame(season, pending, hs, as) {
+    if (pending.kind === 'series' && pending.series.winner !== null) return;
     if (pending.kind === 'playin') {
       const g = pending.game;
+      if (g.done) return;
       g.hs = hs; g.as = as; g.done = true;
       g.winnerId = hs > as ? g.home : g.away;
       g.loserId = g.winnerId === g.home ? g.away : g.home;
