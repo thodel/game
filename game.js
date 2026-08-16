@@ -233,6 +233,250 @@ const App = (() => {
     };
   }
 
+  // ── INTERACTIVE FOOTBALL MATCH ───────────────────
+  // The career mode owns progression; this engine only produces a match result.
+  let liveMatch = null;
+
+  function footballOpponent() {
+    const teams = CONFIG.football.teamNames.filter(n => n !== state.career.teamName);
+    return teams[rand(0, teams.length - 1)];
+  }
+
+  function showFootballMatch() {
+    const opponent = footballOpponent();
+    render(`
+      <div class="screen live-match-screen">
+        ${renderHUD()}
+        <div class="card live-match-card">
+          <div class="live-scorebar">
+            <div><small>HEIM</small><strong>${state.career.teamName}</strong></div>
+            <div class="live-score"><span id="live-home-score">0</span><i>:</i><span id="live-away-score">0</span></div>
+            <div class="live-away"><small>GAST</small><strong>${opponent}</strong></div>
+          </div>
+          <div class="live-pitch-wrap">
+            <canvas id="football-canvas" width="960" height="540" aria-label="Spielbares Fussballfeld"></canvas>
+            <div class="live-kickoff" id="live-kickoff">
+              <span>KARRIERE-SPIEL</span>
+              <h2>Bereit für den Anstoss?</h2>
+              <p>Ein Match dauert 60 Sekunden.</p>
+              <button class="btn btn-success" onclick="App.startFootballMatch()">Anstoss ⚽</button>
+            </div>
+            <div class="live-message" id="live-message"></div>
+          </div>
+          <div class="live-controls">
+            <span><kbd>WASD</kbd> oder Pfeiltasten: bewegen</span>
+            <span><kbd>SHIFT</kbd> sprinten</span>
+            <span><kbd>LEERTASTE</kbd> schiessen</span>
+            <b id="live-clock">00:00</b>
+          </div>
+          <button class="btn btn-ghost btn-sm live-cancel" onclick="App.abandonFootballMatch()">Spiel abbrechen</button>
+        </div>
+      </div>
+    `);
+    liveMatch = { opponent, phase: 'ready', keys: new Set(), raf: null, cleanup: null };
+    requestAnimationFrame(() => drawFootballPreview());
+  }
+
+  function drawFootballPreview() {
+    const canvas = document.getElementById('football-canvas');
+    if (!canvas || !liveMatch) return;
+    const context = canvas.getContext('2d');
+    drawFootballPitch(context, canvas.width, canvas.height);
+    const preview = [
+      {x:110,y:270,team:'home'}, {x:310,y:170,team:'home'}, {x:390,y:350,team:'home'},
+      {x:850,y:270,team:'away'}, {x:650,y:170,team:'away'}, {x:570,y:350,team:'away'}
+    ];
+    preview.forEach((p, i) => drawFootballer(context, p, i === 1));
+    drawFootball(context, {x:480,y:270,r:8});
+  }
+
+  function startFootballMatch() {
+    if (!liveMatch || liveMatch.phase !== 'ready') return;
+    const canvas = document.getElementById('football-canvas');
+    const kickoff = document.getElementById('live-kickoff');
+    if (!canvas) return;
+    kickoff?.remove();
+
+    const human = {x:300,y:270,homeX:300,homeY:270,team:'home',r:14,vx:0,vy:0,human:true,cooldown:0};
+    const players = [
+      {x:105,y:270,homeX:105,homeY:270,team:'home',r:17,keeper:true,cooldown:0},
+      human,
+      {x:360,y:150,homeX:360,homeY:150,team:'home',r:14,cooldown:0},
+      {x:855,y:270,homeX:855,homeY:270,team:'away',r:17,keeper:true,cooldown:0},
+      {x:660,y:270,homeX:660,homeY:270,team:'away',r:14,cooldown:0},
+      {x:600,y:390,homeX:600,homeY:390,team:'away',r:14,cooldown:0},
+    ];
+    Object.assign(liveMatch, {
+      phase:'playing', canvas, context:canvas.getContext('2d'), players, human,
+      ball:{x:480,y:270,r:8,vx:0,vy:0,owner:null}, score:{home:0,away:0},
+      events:[], elapsed:0, last:performance.now(), resetUntil:0
+    });
+
+    const down = e => {
+      liveMatch?.keys.add(e.code);
+      if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+      if (e.code === 'Space') footballShoot(liveMatch?.human);
+    };
+    const up = e => liveMatch?.keys.delete(e.code);
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    liveMatch.cleanup = () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
+    footballFrame(performance.now());
+  }
+
+  function footballFrame(now) {
+    const m = liveMatch;
+    if (!m || m.phase !== 'playing') return;
+    const dt = Math.min(.035, Math.max(0, (now - m.last) / 1000));
+    m.last = now;
+    updateFootballMatch(m, dt);
+    drawFootballMatch(m);
+    if (m.phase === 'playing') m.raf = requestAnimationFrame(footballFrame);
+  }
+
+  function updateFootballMatch(m, dt) {
+    if (m.resetUntil > performance.now()) return;
+    m.elapsed += dt;
+    if (m.elapsed >= 60) return finishFootballMatch();
+
+    const k = m.keys;
+    let dx = (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0) - (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0);
+    let dy = (k.has('KeyS') || k.has('ArrowDown') ? 1 : 0) - (k.has('KeyW') || k.has('ArrowUp') ? 1 : 0);
+    const length = Math.hypot(dx,dy) || 1;
+    const speed = k.has('ShiftLeft') || k.has('ShiftRight') ? 225 : 170;
+    m.human.vx = dx/length*speed; m.human.vy = dy/length*speed;
+
+    m.players.forEach(p => {
+      p.cooldown = Math.max(0, p.cooldown - dt);
+      if (!p.human) updateFootballAI(m, p);
+      p.x = clamp(p.x + (p.vx || 0)*dt, 48+p.r, 912-p.r);
+      p.y = clamp(p.y + (p.vy || 0)*dt, 34+p.r, 506-p.r);
+    });
+
+    updateFootballBall(m, dt);
+    const matchMinute = Math.min(90, Math.floor(m.elapsed * 1.5));
+    const clock = document.getElementById('live-clock');
+    if (clock) clock.textContent = `${String(matchMinute).padStart(2,'0')}:${String(Math.floor((m.elapsed*90)%60)).padStart(2,'0')}`;
+  }
+
+  function updateFootballAI(m, p) {
+    let tx=p.homeX, ty=p.homeY, speed=115;
+    if (p.keeper) {
+      tx = p.team === 'home' ? 92 : 868;
+      ty = clamp(m.ball.y, 205, 335);
+    } else if (m.ball.owner === p) {
+      tx = p.team === 'home' ? 930 : 30; ty=270; speed=142;
+      if (Math.abs(tx-p.x) < 230 && p.cooldown <= 0) footballShoot(p);
+    } else if (!m.ball.owner || m.ball.owner.team !== p.team) {
+      const mates=m.players.filter(q=>q.team===p.team&&!q.keeper);
+      const nearest=mates.reduce((a,b)=>footballDistance(a,m.ball)<footballDistance(b,m.ball)?a:b);
+      if (nearest===p) { tx=m.ball.x; ty=m.ball.y; speed=155; }
+    }
+    const d=Math.hypot(tx-p.x,ty-p.y)||1;
+    p.vx=(tx-p.x)/d*speed; p.vy=(ty-p.y)/d*speed;
+  }
+
+  function updateFootballBall(m, dt) {
+    const b=m.ball;
+    if (b.owner) {
+      const p=b.owner;
+      b.x=p.x+(p.team==='home'?p.r+7:-p.r-7); b.y=p.y+2;
+      for (const q of m.players) {
+        if (q.team!==p.team && footballDistance(q,p)<q.r+p.r+3 && q.cooldown<=0) {
+          q.cooldown=.65; p.cooldown=.3; b.owner=q; break;
+        }
+      }
+      return;
+    }
+    b.x+=b.vx*dt; b.y+=b.vy*dt;
+    const drag=Math.pow(.985,dt*60); b.vx*=drag; b.vy*=drag;
+    if (b.y<34+b.r||b.y>506-b.r) { b.vy*=-.75; b.y=clamp(b.y,34+b.r,506-b.r); }
+    const inGoal=b.y>205&&b.y<335;
+    if (b.x<48&&inGoal) return footballGoal('away');
+    if (b.x>912&&inGoal) return footballGoal('home');
+    if (b.x<48+b.r||b.x>912-b.r) { b.vx*=-.75; b.x=clamp(b.x,48+b.r,912-b.r); }
+    for (const p of m.players) {
+      if (footballDistance(p,b)<p.r+b.r+3 && Math.hypot(b.vx,b.vy)<300 && p.cooldown<=0) { b.owner=p; break; }
+    }
+  }
+
+  function footballShoot(player) {
+    const m=liveMatch;
+    if (!m || !player || m.ball.owner!==player) return;
+    const tx=player.team==='home'?940:20, ty=270+rand(-65,65);
+    const d=Math.hypot(tx-player.x,ty-player.y)||1;
+    m.ball.owner=null; m.ball.vx=(tx-player.x)/d*500; m.ball.vy=(ty-player.y)/d*500; player.cooldown=.5;
+  }
+
+  function footballGoal(team) {
+    const m=liveMatch;
+    if (!m || m.phase!=='playing') return;
+    m.score[team]++;
+    const minute=Math.min(90,Math.max(1,Math.round(m.elapsed*1.5)));
+    m.events.push({minute,text:team==='home'?'Tor für dein Team! ⚽':'Gegentor 😤',type:team==='home'?'player':'opponent'});
+    const scoreEl=document.getElementById(`live-${team}-score`); if(scoreEl)scoreEl.textContent=m.score[team];
+    const message=document.getElementById('live-message');
+    if(message){message.textContent=team==='home'?'TOR!':'GEGENTOR';message.classList.add('show');setTimeout(()=>message.classList.remove('show'),1000);}
+    m.resetUntil=performance.now()+1500;
+    setTimeout(()=>resetFootballPositions(team==='home'?'away':'home'),1250);
+  }
+
+  function resetFootballPositions(kickoffTeam) {
+    const m=liveMatch; if(!m||m.phase!=='playing')return;
+    m.players.forEach(p=>{p.x=p.homeX;p.y=p.homeY;p.vx=p.vy=0;});
+    Object.assign(m.ball,{x:480,y:270,vx:0,vy:0,owner:m.players.find(p=>p.team===kickoffTeam&&!p.keeper)});
+    m.resetUntil=0;
+  }
+
+  function finishFootballMatch() {
+    const m=liveMatch; if(!m||m.phase!=='playing')return;
+    m.phase='finished'; if(m.raf)cancelAnimationFrame(m.raf); m.cleanup?.();
+    const result=m.score.home>m.score.away?'win':m.score.home<m.score.away?'loss':'draw';
+    const c=state.career,p=state.player;
+    if(result==='win')c.wins++; else if(result==='loss')c.losses++; else c.draws++;
+    const money=(result==='win'?rand(800,2000):result==='draw'?rand(200,600):rand(100,400))*(c.leagueIndex+1);
+    const personal=m.score.home>0?rand(0,m.score.home):0;
+    const assists=Math.max(0,m.score.home-personal);
+    c.goals+=personal;c.assists+=assists;c.bestMatchGoals=Math.max(c.bestMatchGoals,personal);
+    p.money+=money;p.totalEarned+=money;p.energy=clamp(p.energy-rand(15,30),0,100);
+    p.morale=result==='win'?clamp(p.morale+rand(5,15),0,100):result==='loss'?clamp(p.morale-rand(5,12),0,100):p.morale;
+    p.fame+=result==='win'?rand(3,8):rand(0,2);c.week++;if(c.week>c.weeksPerSeason)endSeason();
+    const matchResult={playerGoals:m.score.home,oppGoals:m.score.away,result,opponent:m.opponent,events:m.events,money,personal,assists,score:`${m.score.home} : ${m.score.away}`};
+    const type=result==='win'?'good':result==='loss'?'bad':'neutral';
+    addLog(`${result==='win'?'Sieg':result==='draw'?'Unentschieden':'Niederlage'} gegen ${m.opponent} (${matchResult.score})`,type);
+    saveGame();checkAchievements().forEach(a=>setTimeout(()=>showAchievement(a),600));saveGame();
+    liveMatch=null;showMatch(matchResult);
+  }
+
+  function abandonFootballMatch() {
+    if(liveMatch?.raf)cancelAnimationFrame(liveMatch.raf);liveMatch?.cleanup?.();liveMatch=null;showHub('home');
+  }
+
+  function footballDistance(a,b){return Math.hypot(a.x-b.x,a.y-b.y);}
+
+  function drawFootballMatch(m) {
+    drawFootballPitch(m.context,960,540);m.players.forEach(p=>drawFootballer(m.context,p,p.human));drawFootball(m.context,m.ball);
+  }
+
+  function drawFootballPitch(context,w,h) {
+    const gradient=context.createLinearGradient(0,0,w,h);gradient.addColorStop(0,'#31733b');gradient.addColorStop(1,'#20542f');context.fillStyle=gradient;context.fillRect(0,0,w,h);
+    for(let i=0;i<10;i++){context.fillStyle=i%2?'rgba(255,255,255,.025)':'rgba(0,0,0,.035)';context.fillRect(i*w/10,0,w/10,h);}
+    context.strokeStyle='rgba(255,255,255,.72)';context.lineWidth=2;context.strokeRect(48,34,864,472);
+    context.beginPath();context.moveTo(480,34);context.lineTo(480,506);context.stroke();context.beginPath();context.arc(480,270,62,0,Math.PI*2);context.stroke();
+    context.strokeRect(48,160,120,220);context.strokeRect(792,160,120,220);context.strokeRect(48,205,45,130);context.strokeRect(867,205,45,130);
+    context.fillStyle='rgba(8,14,10,.45)';context.fillRect(32,205,16,130);context.fillRect(912,205,16,130);
+  }
+
+  function drawFootballer(context,p,selected) {
+    context.fillStyle='rgba(0,0,0,.28)';context.beginPath();context.ellipse(p.x+2,p.y+6,p.r+3,p.r*.6,0,0,Math.PI*2);context.fill();
+    context.fillStyle=p.team==='home'?'#dfff53':'#4267d6';context.beginPath();context.arc(p.x,p.y,p.r,0,Math.PI*2);context.fill();context.strokeStyle=p.team==='home'?'#152016':'#c5d0ff';context.lineWidth=3;context.stroke();
+    if(selected){context.strokeStyle='#fff';context.lineWidth=2;context.beginPath();context.arc(p.x,p.y,p.r+7,0,Math.PI*2);context.stroke();}
+  }
+
+  function drawFootball(context,b) {
+    context.fillStyle='rgba(0,0,0,.3)';context.beginPath();context.ellipse(b.x+2,b.y+5,b.r+2,b.r*.55,0,0,Math.PI*2);context.fill();context.fillStyle='#fff';context.beginPath();context.arc(b.x,b.y,b.r,0,Math.PI*2);context.fill();context.fillStyle='#111';context.beginPath();context.arc(b.x,b.y,2.5,0,Math.PI*2);context.fill();
+  }
+
   function endSeason() {
     const c = state.career;
     const p = state.player;
@@ -340,7 +584,7 @@ const App = (() => {
           <span style="font-size:.85rem">${c.wins}S ${c.draws}U ${c.losses}N</span>
         </div>
         <div class="season-progress"><div class="season-fill" style="width:${pct}%"></div></div>
-        <div style="font-size:.75rem;color:var(--muted);margin-top:4px">${c.teamName} • ${p ? '' : ''}${total} Spiele</div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:4px">${c.teamName} • ${total} Spiele</div>
       </div>
     `;
   }
@@ -633,6 +877,10 @@ const App = (() => {
       showHub('home');
       return;
     }
+    if (state.sport === 'football') {
+      showFootballMatch();
+      return;
+    }
     const result = simulateMatch();
     const type = result.result === 'win' ? 'good' : result.result === 'loss' ? 'bad' : 'neutral';
     addLog(`${result.result === 'win' ? 'Sieg' : result.result === 'draw' ? 'Unentschieden' : 'Niederlage'} gegen ${result.opponent} (${result.score})`, type);
@@ -688,6 +936,8 @@ const App = (() => {
     confirmNewGame,
     _doNewGame,
     playMatch,
+    startFootballMatch,
+    abandonFootballMatch,
     train,
     doRest,
     useSkillPoint,

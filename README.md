@@ -10,6 +10,8 @@ Browserbasiertes Karriere-Spiel für Fussball ⚽ und Basketball 🏀.
 
 - Wähle eine Sportart und erstelle deinen Spieler
 - Trainiere Skills, spiele Matches, verdiene Geld
+- Steuere Fussballspiele direkt mit WASD/Pfeiltasten, Shift und Leertaste
+- Basketballspiele werden weiterhin als kompakte Match-Simulation ausgewertet
 - Steige durch 7 Ligen auf – von der Kreisliga bis zur Champions League / NBA
 - Schalte Achievements frei
 - Spielstand wird automatisch im Browser gespeichert
