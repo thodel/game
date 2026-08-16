@@ -913,8 +913,47 @@ const App = (() => {
     c.goals+=personal;c.assists+=assists;c.bestMatchGoals=Math.max(c.bestMatchGoals,personal);
     p.money+=money;p.totalEarned+=money;p.energy=clamp(p.energy-rand(15,30),0,100);
     p.morale=result==='win'?clamp(p.morale+rand(5,15),0,100):result==='loss'?clamp(p.morale-rand(5,12),0,100):p.morale;
-    p.fame+=result==='win'?rand(3,8):rand(0,2);c.week++;if(c.week>c.weeksPerSeason)endSeason();
-    const matchResult={playerGoals:m.score.home,oppGoals:m.score.away,result,opponent:m.opponent,events:m.events,money,personal,assists,score:`${m.score.home} : ${m.score.away}`};
+    p.fame+=result==='win'?rand(3,8):rand(0,2);
+    // #14 Update player's league table row
+    if (state.leagueTable) {
+      const playerRow = state.leagueTable.find(t => t.isPlayer);
+      if (playerRow) {
+        if (result==='win') { playerRow.w++; playerRow.pts+=3; }
+        else if (result==='draw') { playerRow.d++; playerRow.pts++; }
+        else playerRow.l++;
+        playerRow.gf += m.score.home; playerRow.ga += m.score.away;
+      }
+      simulateRivalFixtures(state.leagueTable);
+    }
+    // Mark fixture played
+    if (state.fixtures) { const fx = state.fixtures.find(f => !f.played && f.week === c.week); if (fx) fx.played = true; }
+    // #17 Injury check (football)
+    let injuryMsg = null;
+    const injChance = p.energy < 30 ? 0.15 : 0.08;
+    if (!p.injury && Math.random() < injChance) {
+      const sev = Math.random();
+      if (sev < 0.6) {
+        const wl = rand(1,2); injuryMsg = `Muskelverletzung \u2014 ${wl} Wochen Pause`;
+        p.injury = { weeksLeft: wl, type: 'minor' };
+      } else if (sev < 0.9) {
+        const wl = rand(3,5); injuryMsg = `B\u00e4nderriss \u2014 ${wl} Wochen Pause`;
+        p.injury = { weeksLeft: wl, type: 'moderate' };
+      } else {
+        const wl = rand(6,10); injuryMsg = `Knochenbruch \u2014 ${wl} Wochen Pause`;
+        const dmgStat = ['Tempo','Kondition'][rand(0,1)];
+        p.stats[dmgStat] = clamp(p.stats[dmgStat] - 2, 1, 99);
+        p.injury = { weeksLeft: wl, type: 'severe' };
+      }
+      addLog(`\u26a0\ufe0f ${injuryMsg}`, 'bad');
+    }
+    // #17 Yellow card
+    if (Math.random() < 0.10) {
+      p.yellowCards = (p.yellowCards||0) + 1;
+      addLog(`\ud83d\udfe8 Gelbe Karte! (${p.yellowCards}/3)`, 'neutral');
+      if (p.yellowCards >= 3) { p.suspension = (p.suspension||0) + 1; p.yellowCards = 0; addLog('3 Gelbe Karten \u2014 1 Woche Sperre! \ud83d\udeab', 'bad'); }
+    }
+    advanceWeek();
+    const matchResult={playerGoals:m.score.home,oppGoals:m.score.away,result,opponent:m.opponent,events:m.events,money,personal,assists,injuryMsg,score:`${m.score.home} : ${m.score.away}`};
     const type=result==='win'?'good':result==='loss'?'bad':'neutral';
     addLog(`${result==='win'?'Sieg':result==='draw'?'Unentschieden':'Niederlage'} gegen ${m.opponent} (${matchResult.score})`,type);
     saveGame();checkAchievements().forEach(a=>setTimeout(()=>showAchievement(a),600));saveGame();
@@ -1066,10 +1105,27 @@ const App = (() => {
     c.season++;
     c.seasons++;
     p.age++;
+    // #19 Age curve
+    if (p.age < 26) {
+      const allStats = Object.keys(p.stats);
+      const rs = allStats[rand(0, allStats.length-1)];
+      p.stats[rs] = clamp(p.stats[rs] + 1, 1, 99);
+    } else if (p.age >= 28 && p.age <= 32) {
+      const physS = state.sport === 'football' ? ['Tempo','Kondition'] : ['Speed','Dunks'];
+      physS.forEach(s => { if (p.stats[s] !== undefined) p.stats[s] = clamp(p.stats[s] - rand(0,2), 1, 99); });
+    } else if (p.age >= 33) {
+      const physS = state.sport === 'football' ? ['Tempo','Kondition'] : ['Speed','Dunks'];
+      const techS = state.sport === 'football' ? ['Technik'] : ['IQ','Ballhandling'];
+      physS.forEach(s => { if (p.stats[s] !== undefined) p.stats[s] = clamp(p.stats[s] - rand(1,3), 1, 99); });
+      techS.forEach(s => { if (p.stats[s] !== undefined) p.stats[s] = clamp(p.stats[s] - rand(0,1), 1, 99); });
+    }
     p.skillPoints += 2;
     p.energy = 100;
     p.morale = clamp(p.morale + 10, 0, 100);
     c.playoffs = null;
+    // #19 Retirement
+    if (p.age >= 40) state._forceRetirement = true;
+    else if (p.age >= 35) state._offerRetirement = true;
 
     // Reset BB standings for new season
     if (isBasketball) {
@@ -1081,10 +1137,25 @@ const App = (() => {
 
     // Promotion / Relegation
     const winRate = c.wins / Math.max(c.wins + c.losses + c.draws, 1);
-    const promotionThreshold = isBasketball ? 0.60 : 0.55;
-    const relegationThreshold = isBasketball ? 0.38 : 0.30;
-
-    if (winRate >= promotionThreshold && c.leagueIndex < cfg.leagues.length - 1) {
+    const promotionThreshold = 0.60; // basketball
+    const relegationThreshold = 0.38; // basketball
+    // #14 Football: table position determines fate
+    if (!isBasketball && state.leagueTable && state.leagueTable.length > 0) {
+      const sorted = state.leagueTable.slice().sort((a,b) => b.pts!==a.pts?b.pts-a.pts:(b.gf-b.ga)-(a.gf-a.ga));
+      const playerPos = sorted.findIndex(t => t.isPlayer) + 1;
+      const tSize = sorted.length;
+      if (playerPos === 1 && c.leagueIndex < cfg.leagues.length - 1) {
+        c.leagueIndex++; c.promotions++;
+        c.teamName = cfg.teamNames[rand(0, cfg.teamNames.length-1)];
+        addLog(`🏆 Tabellenführer! Aufgestiegen in die ${leagueName(state)} 🎉`, 'special');
+      } else if (playerPos >= tSize - 1 && c.leagueIndex > 0) {
+        c.leagueIndex--; c.relegations++;
+        c.teamName = cfg.teamNames[rand(0, cfg.teamNames.length-1)];
+        addLog(`⬇️ Platz ${playerPos} — Abgestiegen in die ${leagueName(state)} 😤`, 'bad');
+      } else {
+        addLog(`Saison ${c.season-1}: Platz ${playerPos} in der Tabelle — ${leagueName(state)}.`, 'neutral');
+      }
+    } else if (isBasketball && winRate >= promotionThreshold && c.leagueIndex < cfg.leagues.length - 1) {
       c.leagueIndex++;
       c.promotions++;
       const teams = isBasketball
@@ -1097,7 +1168,7 @@ const App = (() => {
         const flag = cfg.leagueFlags?.[c.leagueIndex] || '';
         addLog(`${flag} Aufgestiegen in die ${leagueName(state)}! Neuer Klub: ${c.teamName} 🎉`, 'special');
       }
-    } else if (winRate < relegationThreshold && c.leagueIndex > 0) {
+    } else if (isBasketball && winRate < relegationThreshold && c.leagueIndex > 0) {
       c.leagueIndex--;
       c.relegations++;
       const teams = isBasketball
@@ -1152,19 +1223,38 @@ const App = (() => {
       : rand(2000, 8000) * (c.leagueIndex + 1);
     p.money += bonus;
     p.totalEarned += bonus;
+    // #16 Renew contract for new season
+    state.contract = generateContract(state.sport, c.leagueIndex);
+    // #14/#15 Reinit football league structures
+    if (!isBasketball) {
+      state.leagueTable = initLeagueTable(state.sport, c.teamName, c.leagueIndex);
+      state.fixtures = generateFixtures(state.leagueTable, c.teamName);
+    }
+    // #16 Transfer offers (season 2+, football)
+    if (c.seasons >= 2 && !isBasketball) {
+      const numOffers = rand(0, 2);
+      if (numOffers > 0) {
+        const offerTeams = shuffle(CONFIG.football.teamNames.filter(n => n !== c.teamName));
+        state._pendingTransferOffers = offerTeams.slice(0, numOffers).map(team => ({
+          team, wage: Math.round((state.contract.wage || 500) * (1.1 + Math.random() * 0.5))
+        }));
+      }
+    }
   }
 
   // ── TRAINING ──────────────────────────────────────
   function doTraining(stat) {
     const p = state.player;
     if (p.energy < 20) return { ok: false, msg: 'Zu wenig Energie! Erst ausruhen.' };
-    const gain = rand(2, 6);
+    // #18 position bonus
+    const weights = (POSITION_WEIGHTS[state.sport] || {})[p.position] || {};
+    const posBonus = (weights[stat] || 1.0) > 1.0 ? 1 : 0;
+    const gain = rand(2, 6) + posBonus;
     p.stats[stat] = clamp(p.stats[stat] + gain, 1, 99);
     p.energy = clamp(p.energy - rand(10, 20), 0, 100);
     p.money -= 50;
-    state.career.week++;
-    if (state.career.week > state.career.weeksPerSeason) endSeason();
-    addLog(`Training: ${stat} +${gain}`, 'good');
+    advanceWeek();
+    addLog(`Training: ${stat} +${gain}${posBonus ? ' (+1 Positionsbonus)' : ''}`, 'good');
     return { ok: true, gain, stat };
   }
 
@@ -1174,8 +1264,7 @@ const App = (() => {
     const moraleGain = rand(5, 15);
     p.energy = clamp(p.energy + energyGain, 0, 100);
     p.morale = clamp(p.morale + moraleGain, 0, 100);
-    state.career.week++;
-    if (state.career.week > state.career.weeksPerSeason) endSeason();
+    advanceWeek();
     addLog(`Erholt. Energie +${energyGain}, Moral +${moraleGain}`, 'neutral');
   }
 
@@ -1208,6 +1297,8 @@ const App = (() => {
         <div class="hud-block"><div class="hud-label">Alter</div><div class="hud-value">${p.age}</div></div>
         <div class="hud-block"><div class="hud-label">Energie</div><div class="hud-value ${p.energy < 30 ? 'bad' : ''}">${p.energy}%</div></div>
         <div class="hud-block"><div class="hud-label">Geld</div><div class="hud-value">€${fmt(p.money)}</div></div>
+        ${p.injury ? `<div class="hud-block" style="color:var(--danger)"><div class="hud-label">🤕 Verletzt</div><div class="hud-value">${p.injury.weeksLeft}W</div></div>` : ''}
+        ${(p.suspension||0) > 0 ? `<div class="hud-block" style="color:var(--danger)"><div class="hud-label">🟨 Gesperrt</div><div class="hud-value">${p.suspension}W</div></div>` : ''}
         ${!state._quickGame ? `<button class="btn btn-ghost btn-sm" style="margin-left:auto;font-size:.75rem" onclick="App.showExitMenu()">&#x23CF;&#xFE0F; Beenden</button>` : ''}
       </div>
     `;
@@ -1304,6 +1395,14 @@ const App = (() => {
           </div>
         </div>
         ${savesHtml}
+        ${(() => {
+          try {
+            const hof = JSON.parse(localStorage.getItem('sportsCareer_hallOfFame') || '[]');
+            if (!hof.length) return '';
+            const rows = hof.map(e => `<div style="padding:6px 0;border-bottom:1px solid var(--border)"><strong>${e.name}</strong> — ${e.sport==='football'?'⚽️':'🏀'} ${e.bestLeague}<span style="color:var(--muted);float:right">${e.seasons} Saisons · €${(e.totalEarned||0).toLocaleString('de-CH')}</span></div>`).join('');
+            return `<div class="card" style="max-width:480px;margin:16px auto 0"><details><summary style="cursor:pointer;font-weight:700">🏆 Hall of Fame (${hof.length})</summary><div style="margin-top:10px">${rows}</div></details></div>`;
+          } catch { return ''; }
+        })()} 
       </div>
     `);
   }
@@ -1355,6 +1454,7 @@ const App = (() => {
         energy: 100, morale: 80, fame: rand(10,30),
         money: 0, totalEarned: 0,
         stats: baseStats, skillPoints: 0,
+        injury: null, suspension: 0, yellowCards: 0,
       },
       career: {
         leagueIndex: startLeague, teamName: myTeam,
@@ -1363,6 +1463,9 @@ const App = (() => {
         goals: 0, assists: 0, promotions: 0, relegations: 0, bestMatchGoals: 0,
       },
       achievements: [], log: [], seasonLog: [],
+      contract: generateContract(sport, startLeague),
+      leagueTable: initLeagueTable(sport, myTeam, startLeague),
+      fixtures: [],
     };
     // Play match immediately
     playMatch(true);
@@ -1456,9 +1559,17 @@ const App = (() => {
     const c = state.career;
     const cfg = CONFIG[state.sport];
 
+    // #19 Pending modal checks (retirement/transfer)
+    if (state._forceRetirement) { state._forceRetirement = false; showRetirement(); return; }
+    if (state._offerRetirement && activeTab === 'home') { state._offerRetirement = false; showRetirementOffer(); return; }
+    if (state._pendingTransferOffers && activeTab === 'home') {
+      const offers = state._pendingTransferOffers; state._pendingTransferOffers = null;
+      setTimeout(() => showTransferOffers(offers), 200);
+    }
     const tabDefs = ['home', 'stats', 'log', 'achievements'];
     if (state.sport === 'basketball') tabDefs.splice(1, 0, 'standings');
-    const tabLabels = { home: '🏠 Übersicht', standings: '📊 Tabelle', stats: '📌 Stats', log: '📋 Log', achievements: '🏆 Erfolge' };
+    if (state.sport === 'football') { tabDefs.push('table'); tabDefs.push('calendar'); }
+    const tabLabels = { home: '🏠 Übersicht', standings: '📊 Tabelle', stats: '📌 Stats', log: '📋 Log', achievements: '🏆 Erfolge', table: '📋 Tabelle', calendar: '📅 Kalender' };
     const tabs = tabDefs.map(t => `
       <button class="tab ${t === activeTab ? 'active' : ''}" onclick="App.showHub('${t}')">${tabLabels[t]}</button>`).join('');
 
@@ -1592,7 +1703,7 @@ const App = (() => {
         <div class="card">
           <h3 style="margin-bottom:4px">${p.name}</h3>
           <div style="color:var(--muted);font-size:.85rem;margin-bottom:20px">${p.position} • ${leagueName(state)} • Alter ${p.age}</div>
-          <div style="margin-bottom:8px;color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.5px">Skills (Ø ${avgStat(p)})</div>
+          <div style="margin-bottom:8px;color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.5px">Skills · Rating (positionsgewichtet): <strong>${positionRating(p)}</strong></div>
           ${statBars}
         </div>
         <div class="card">
@@ -1609,6 +1720,16 @@ const App = (() => {
             <tr><td>📈 Aufstiege</td><td>${c.promotions}</td></tr>
           </table>
         </div>
+        ${state.contract ? `
+        <div class="card">
+          <h3 style="margin-bottom:10px">📄 Vertrag</h3>
+          <table class="table">
+            <tr><td>Verein</td><td>${c.teamName}</td></tr>
+            <tr><td>Gehalt / Woche</td><td>€${fmt(state.contract.wage)}</td></tr>
+            <tr><td>Läuft ab nach Saison</td><td>${state.contract.expiresAfterSeason}</td></tr>
+            <tr><td>Tor-Bonus</td><td>€${fmt(state.contract.bonusPerGoal)}</td></tr>
+          </table>
+        </div>` : ''}
       `;
     }
 
@@ -1634,6 +1755,48 @@ const App = (() => {
           </div>`;
       }).join('');
       content = `<div>${achHtml}</div>`;
+    }
+
+    // #14 Football league table
+    if (activeTab === 'table' && state.sport === 'football') {
+      const table = (state.leagueTable || []).slice().sort((a,b) => b.pts!==a.pts?b.pts-a.pts:(b.gf-b.ga)-(a.gf-a.ga));
+      const tableRows = table.map((t, i) => {
+        const gd = t.gf - t.ga;
+        return `<tr style="${t.isPlayer ? 'background:rgba(255,220,0,.08);font-weight:700' : ''}">
+          <td>${i+1}</td><td>${t.isPlayer ? '⭐ '+t.name : t.name}</td>
+          <td>${t.pts}</td><td>${t.w}</td><td>${t.d}</td><td>${t.l}</td>
+          <td>${gd>0?'+':''}${gd}</td></tr>`;
+      }).join('');
+      content = `
+        <div class="card">
+          <h3 style="margin-bottom:12px">📋 Tabelle — ${leagueName(state)}</h3>
+          <table class="table"><thead><tr><th>#</th><th>Verein</th><th>Pts</th><th>S</th><th>U</th><th>N</th><th>TD</th></tr></thead>
+          <tbody>${tableRows}</tbody></table>
+          <div style="font-size:.76rem;color:var(--muted);margin-top:8px">🟢 Platz 1 = Aufstieg · 🔴 Platz 7–8 = Abstieg</div>
+        </div>`;
+    }
+
+    // #15 Season calendar
+    if (activeTab === 'calendar' && state.sport === 'football') {
+      const fixtures = state.fixtures || [];
+      const upcoming = fixtures.filter(f => !f.played && f.week >= c.week).slice(0, 3);
+      const isOff = c.week >= 23;
+      const upHtml = upcoming.map(f => `
+        <div class="card" style="margin-bottom:8px;padding:12px;display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <span style="background:${f.type==='cup'?'var(--gold)':'var(--accent)'};color:#000;border-radius:4px;padding:2px 7px;font-size:.75rem;margin-right:8px;font-weight:700">${f.type==='cup'?'🏆 Pokal':'⚽️ Liga'}</span>
+            <strong>${f.opponent}</strong>
+            <span style="color:var(--muted);font-size:.85rem;margin-left:6px">${f.home ? '🏠 Heim' : '✈️ Auswärts'}</span>
+          </div>
+          <span style="color:var(--muted);font-size:.85rem">Woche ${f.week}</span>
+        </div>`).join('') || '<p style="color:var(--muted)">Keine anstehenden Spiele.</p>';
+      const allRows = fixtures.map(f => `<tr style="${f.played?'opacity:.45':''}"><td>${f.week}</td><td>${f.type==='cup'?'🏆':'⚽️'}</td><td>${f.opponent}</td><td>${f.home?'🏠':'✈️'}</td><td>${f.played?'✅':f.week<c.week?'⏭️':'—'}</td></tr>`).join('');
+      content = `
+        ${isOff ? '<div class="card" style="text-align:center;border-color:var(--gold);padding:18px"><h3>⛷️ Vorbereitung</h3><p style="color:var(--muted)">Woche '+c.week+' — Saisonpause.</p></div>' : ''}
+        <div class="card"><h3 style="margin-bottom:10px">📅 Nächste Spiele</h3>${upHtml}</div>
+        <div class="card"><h3 style="margin-bottom:10px">📋 Alle Spiele</h3>
+          <table class="table"><thead><tr><th>Wo</th><th>Typ</th><th>Gegner</th><th>H/A</th><th>Status</th></tr></thead>
+          <tbody>${allRows}</tbody></table></div>`;
     }
 
     render(`
@@ -1736,9 +1899,105 @@ const App = (() => {
     showTitle();
   }
 
+  // ── #19 Retirement & #16 Transfer screens ─────────
+  function showRetirement() {
+    const p = state.player, c = state.career;
+    const cfg = CONFIG[state.sport];
+    const hof = (() => { try { return JSON.parse(localStorage.getItem('sportsCareer_hallOfFame')||'[]'); } catch { return []; } })();
+    hof.unshift({ name: p.name, sport: state.sport, seasons: c.seasons,
+      goals: c.goals, totalEarned: p.totalEarned,
+      achievements: state.achievements.length, bestLeague: cfg.leagues[c.leagueIndex] });
+    if (hof.length > 10) hof.pop();
+    localStorage.setItem('sportsCareer_hallOfFame', JSON.stringify(hof));
+    clearSave();
+    render(`
+      <div class="screen">
+        <div class="card" style="text-align:center;padding:32px 24px">
+          <div style="font-size:3rem">🎖️</div>
+          <h2 style="margin:12px 0 4px">Karriere beendet</h2>
+          <div style="color:var(--muted);margin-bottom:24px">${p.name} \u00b7 ${p.position} \u00b7 Alter ${p.age}</div>
+          <table class="table" style="margin:0 auto 24px;max-width:360px">
+            <tr><td>\ud83c\udfc1 Saisons</td><td><strong>${c.seasons}</strong></td></tr>
+            <tr><td>${cfg.icon} Tore/Punkte</td><td><strong>${c.goals}</strong></td></tr>
+            <tr><td>\ud83d\udcb0 Gesamt verdient</td><td><strong>\u20ac${fmt(p.totalEarned)}</strong></td></tr>
+            <tr><td>\ud83c\udfc6 Achievements</td><td><strong>${state.achievements.length}/${ACHIEVEMENTS.length}</strong></td></tr>
+            <tr><td>\ud83d\udcc8 Beste Liga</td><td><strong>${cfg.leagues[c.leagueIndex]}</strong></td></tr>
+          </table>
+          <button class="btn btn-primary btn-block" onclick="App.showTitle()">🚀 Neue Karriere starten</button>
+        </div>
+      </div>
+    `);
+    state = null;
+  }
+
+  function showRetirementOffer() {
+    const p = state.player;
+    const modal = document.createElement('div');
+    modal.className = 'modal-bg';
+    modal.innerHTML = `
+      <div class="modal">
+        <h3>🎖️ Rentenantritt?</h3>
+        <p>Du bist <strong>${p.age} Jahre</strong> alt. Möchtest du in Rente gehen?</p>
+        <div class="modal-btns">
+          <button class="btn btn-primary" onclick="App.retireNow()">Ja, Karriere beenden</button>
+          <button class="btn btn-ghost" onclick="this.closest('.modal-bg').remove();">Nein, weiterspielen</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+
+  function retireNow() {
+    document.querySelector('.modal-bg')?.remove();
+    showRetirement();
+  }
+
+  function showTransferOffers(offers) {
+    if (!offers || !offers.length) return;
+    const offersHtml = offers.map((o, i) => `
+      <div class="card" style="margin-bottom:8px;padding:12px;display:flex;justify-content:space-between;align-items:center">
+        <div><strong>${o.team}</strong><br><span style="color:var(--muted);font-size:.85rem">€${fmt(o.wage)}/Woche</span></div>
+        <button class="btn btn-primary btn-sm" onclick="App.acceptTransfer(${i})">Annehmen</button>
+      </div>`).join('');
+    const modal = document.createElement('div');
+    modal.className = 'modal-bg';
+    modal.innerHTML = `
+      <div class="modal">
+        <h3>\ud83d\udce4 Transferangebote</h3>
+        ${offersHtml}
+        <button class="btn btn-ghost btn-block" onclick="this.closest('.modal-bg').remove()">Alle ablehnen</button>
+      </div>`;
+    modal._offers = offers;
+    document.body.appendChild(modal);
+  }
+
+  function acceptTransfer(idx) {
+    const modal = document.querySelector('.modal-bg');
+    const offers = modal?._offers || [];
+    const offer = offers[idx];
+    if (!offer || !state) { modal?.remove(); return; }
+    state.career.teamName = offer.team;
+    state.contract = generateContract(state.sport, state.career.leagueIndex);
+    state.contract.wage = offer.wage;
+    modal.remove();
+    addLog(`Transfer zu ${offer.team}! Gehalt: \u20ac${fmt(offer.wage)}/Woche`, 'special');
+    saveGame();
+    showHub('home');
+  }
+
   function playMatch(skipEnergyCheck = false) {
     if (!state || (!skipEnergyCheck && state.player.energy < 15)) {
       addLog('Zu müde für ein Spiel! Erst ausruhen.', 'bad');
+      showHub('home');
+      return;
+    }
+    // #17 Injury/suspension check
+    if (state.player.injury && state.player.injury.weeksLeft > 0) {
+      addLog(`Verletzt! Noch ${state.player.injury.weeksLeft} Wochen Pause. 🤕`, 'bad');
+      showHub('home');
+      return;
+    }
+    if ((state.player.suspension||0) > 0) {
+      addLog(`Gesperrt! Noch ${state.player.suspension} Woche(n). 🟨`, 'bad');
       showHub('home');
       return;
     }
@@ -1793,8 +2052,7 @@ const App = (() => {
     const moraleGain = rand(5, 15);
     p.energy = clamp(p.energy + energyGain, 0, 100);
     p.morale = clamp(p.morale + moraleGain, 0, 100);
-    state.career.week++;
-    if (state.career.week > state.career.weeksPerSeason) endSeason();
+    advanceWeek();
     addLog(`Erholt. Energie +${energyGain}, Moral +${moraleGain}`, 'neutral');
     saveGame();
     showHub('home');
@@ -1837,6 +2095,8 @@ const App = (() => {
     train,
     doRest,
     useSkillPoint,
+    retireNow,
+    acceptTransfer,
   };
 })();
 
