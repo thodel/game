@@ -600,7 +600,57 @@ const App = (() => {
   }
 
   function abandonFootballMatch() {
-    if(liveMatch?.raf)cancelAnimationFrame(liveMatch.raf);liveMatch?.cleanup?.();liveMatch=null;showHub('home');
+    // Show exit options instead of immediately abandoning
+    const modal = document.createElement('div');
+    modal.className = 'modal-bg';
+    modal.innerHTML = `
+      <div class="modal">
+        <h3>⏸️ Spiel verlassen?</h3>
+        <p>Was möchtest du tun?</p>
+        <div class="modal-btns" style="flex-direction:column;gap:10px">
+          <button class="btn btn-danger" onclick="App._exitMatchSave()">
+            💾 Speichern &amp; beenden
+            <div style="font-size:.75rem;font-weight:400;margin-top:3px">Niederlage wird gewertet</div>
+          </button>
+          <button class="btn btn-ghost" onclick="App._exitMatchNoSave()">
+            🗑️ Beenden ohne speichern
+            <div style="font-size:.75rem;font-weight:400;margin-top:3px">Match wird rückgängig gemacht</div>
+          </button>
+          <button class="btn btn-ghost btn-sm" onclick="this.closest('.modal-bg').remove()">← Weiterspielen</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+
+  function _exitMatchSave() {
+    // Count as a loss, save, go to hub
+    document.querySelector('.modal-bg')?.remove();
+    if (liveMatch?.raf) cancelAnimationFrame(liveMatch.raf);
+    liveMatch?.cleanup?.();
+    const c = state.career, p = state.player;
+    c.losses++;
+    c.week++;
+    if (c.week > c.weeksPerSeason) endSeason();
+    p.energy = clamp(p.energy - rand(10, 20), 0, 100);
+    p.morale = clamp(p.morale - rand(3, 8), 0, 100);
+    addLog(`Spiel abgebrochen — als Niederlage gewertet`, 'bad');
+    liveMatch = null;
+    saveGame();
+    showHub('home');
+  }
+
+  function _exitMatchNoSave() {
+    // Discard everything — restore from last save
+    document.querySelector('.modal-bg')?.remove();
+    if (liveMatch?.raf) cancelAnimationFrame(liveMatch.raf);
+    liveMatch?.cleanup?.();
+    liveMatch = null;
+    const saved = loadGame();
+    if (saved) {
+      state = saved;
+      addLog('Spiel verlassen — kein Fortschritt gespeichert', 'neutral');
+    }
+    showHub('home');
   }
 
   function footballDistance(a,b){return Math.hypot(a.x-b.x,a.y-b.y);}
@@ -786,8 +836,45 @@ const App = (() => {
         <div class="hud-block"><div class="hud-label">Alter</div><div class="hud-value">${p.age}</div></div>
         <div class="hud-block"><div class="hud-label">Energie</div><div class="hud-value ${p.energy < 30 ? 'bad' : ''}">${p.energy}%</div></div>
         <div class="hud-block"><div class="hud-label">Geld</div><div class="hud-value">€${fmt(p.money)}</div></div>
+        ${!state._quickGame ? `<button class="btn btn-ghost btn-sm" style="margin-left:auto;font-size:.75rem" onclick="App.showExitMenu()">&#x23CF;&#xFE0F; Beenden</button>` : ''}
       </div>
     `;
+  }
+
+  function showExitMenu() {
+    const modal = document.createElement('div');
+    modal.className = 'modal-bg';
+    modal.innerHTML = `
+      <div class="modal">
+        <h3>🏠 Spiel beenden</h3>
+        <p style="margin-bottom:20px">Was möchtest du tun?</p>
+        <div class="modal-btns" style="flex-direction:column;gap:10px">
+          <button class="btn btn-primary" onclick="App._saveAndQuit()">
+            💾 Speichern &amp; zum Menü
+            <div style="font-size:.75rem;font-weight:400;margin-top:3px">Fortschritt wird gespeichert</div>
+          </button>
+          <button class="btn btn-ghost" onclick="App._quitNoSave()">
+            🗑️ Beenden ohne speichern
+            <div style="font-size:.75rem;font-weight:400;margin-top:3px">Alle ungespeicherten Änderungen gehen verloren</div>
+          </button>
+          <button class="btn btn-ghost btn-sm" onclick="this.closest('.modal-bg').remove()">← Zurück zum Spiel</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+
+  function _saveAndQuit() {
+    document.querySelector('.modal-bg')?.remove();
+    saveGame();
+    state = null;
+    showTitle();
+  }
+
+  function _quitNoSave() {
+    document.querySelector('.modal-bg')?.remove();
+    // State reverts to last persisted save (don’t touch localStorage)
+    state = null;
+    showTitle();
   }
 
   function renderSeasonBar() {
@@ -1273,6 +1360,11 @@ const App = (() => {
     skipStadiumIntro,
     startFootballMatch,
     abandonFootballMatch,
+    _exitMatchSave,
+    _exitMatchNoSave,
+    showExitMenu,
+    _saveAndQuit,
+    _quitNoSave,
     train,
     doRest,
     useSkillPoint,
