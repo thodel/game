@@ -21,3 +21,13 @@ Browserbasiertes Karriere-Spiel für Fussball ⚽ und Basketball 🏀.
 ## Technologie
 
 Reines HTML/CSS/JavaScript – keine Dependencies, kein Build-Step.
+
+## Development
+
+```bash
+npm install
+npm test      # run tests
+npm run build # optional build step
+```
+
+[![CI](https://github.com/thodel/game/actions/workflows/ci.yml/badge.svg)](https://github.com/thodel/game/actions/workflows/ci.yml)
