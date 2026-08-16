@@ -49,6 +49,23 @@ const App = (() => {
     },
   };
 
+  // ── #18 Position weights ──────────────────────────
+  const POSITION_WEIGHTS = {
+    football: {
+      'Torwart':   { Tempo:0.5, Technik:0.8, Schuss:0.2, Dribbling:0.3, Kondition:1.0, Kopfball:1.2 },
+      'Abwehr':    { Tempo:0.9, Technik:0.7, Schuss:0.3, Dribbling:0.5, Kondition:1.1, Kopfball:1.3 },
+      'Mittelfeld':{ Tempo:1.0, Technik:1.3, Schuss:0.8, Dribbling:1.1, Kondition:1.2, Kopfball:0.8 },
+      'Stürmer':   { Tempo:1.2, Technik:1.0, Schuss:1.5, Dribbling:1.2, Kondition:0.9, Kopfball:1.1 },
+    },
+    basketball: {
+      'Point Guard':    { Speed:1.3, Ballhandling:1.5, '3-Pointer':1.0, Defense:0.7, Dunks:0.5, IQ:1.4 },
+      'Shooting Guard': { Speed:1.1, Ballhandling:1.0, '3-Pointer':1.5, Defense:0.8, Dunks:0.8, IQ:1.0 },
+      'Small Forward':  { Speed:1.0, Ballhandling:0.9, '3-Pointer':1.1, Defense:1.0, Dunks:1.1, IQ:1.0 },
+      'Power Forward':  { Speed:0.7, Ballhandling:0.7, '3-Pointer':0.6, Defense:1.3, Dunks:1.4, IQ:1.0 },
+      'Center':         { Speed:0.5, Ballhandling:0.5, '3-Pointer':0.3, Defense:1.5, Dunks:1.5, IQ:1.1 },
+    },
+  };
+
   const ACHIEVEMENTS = [
     { id: 'first_win', name: 'Erster Sieg!', desc: 'Dein erstes Spiel gewonnen', icon: '🏆', check: s => s.career.wins >= 1 },
     { id: 'season1', name: 'Erstes Comeback', desc: 'Erste Saison abgeschlossen', icon: '📅', check: s => s.career.seasons >= 1 },
@@ -131,20 +148,173 @@ const App = (() => {
         season: 1,
         seasons: 0,
         week: 1,
-        weeksPerSeason: 24,
+        // Basketball: NBA=38 weeks (30 regular + 8 playoffs), G-League=24 (20+4)
+        // Football: 24 weeks
+        weeksPerSeason: isBasketball ? (startLeague === 1 ? 38 : 24) : 24,
+        regularSeasonWeeks: isBasketball ? (startLeague === 1 ? 30 : 20) : 24,
         wins: 0,
         losses: 0,
         draws: 0,
-        goals: 0,          // points/goals scored by player
+        goals: 0,
         assists: 0,
         promotions: 0,
         relegations: 0,
         bestMatchGoals: 0,
+        // Basketball league table
+        bbStandings: isBasketball ? initBBStandings(startLeague, startTeams[rand(0, startTeams.length - 1)]) : null,
+        // Playoff state
+        playoffs: null,
       },
       achievements: [],
       log: [],
       seasonLog: [],
     };
+  }
+
+  // ── Basketball standings helpers ──────────────────
+  function initBBStandings(leagueIdx, playerTeam) {
+    const cfg = CONFIG.basketball;
+    const pool = cfg.teamsByLeague[leagueIdx].filter(n => n !== playerTeam);
+    const rivals = shuffle(pool).slice(0, 14); // 14 rivals + player = 15 teams
+    const rows = rivals.map(name => ({
+      name, strength: rand(40, 85), w: 0, l: 0, pct: 0
+    }));
+    // Give rivals a plausible start (spread of existing records)
+    rows.forEach(r => {
+      const g = rand(0, 5);
+      r.w = rand(0, g); r.l = g - r.w;
+      r.pct = r.w + r.l > 0 ? r.w / (r.w + r.l) : 0;
+    });
+    return { rows, playoffSeeds: [] };
+  }
+
+  function simBBRivalWeek() {
+    if (!state.career.bbStandings) return;
+    const rows = state.career.bbStandings.rows;
+    // Simulate 1–2 rival games per week
+    const games = rand(1, 2);
+    for (let g = 0; g < games; g++) {
+      const i = rand(0, rows.length - 1);
+      let j = rand(0, rows.length - 1);
+      while (j === i) j = rand(0, rows.length - 1);
+      const a = rows[i], b = rows[j];
+      const pa = a.strength + rand(-10, 10), pb = b.strength + rand(-10, 10);
+      if (pa >= pb) { a.w++; b.l++; } else { b.w++; a.l++; }
+      a.pct = a.w / (a.w + a.l);
+      b.pct = b.w / (b.w + b.l);
+    }
+  }
+
+  function getBBTableRows() {
+    if (!state.career.bbStandings) return [];
+    const c = state.career;
+    const playerRow = {
+      name: c.teamName, strength: 70,
+      w: c.wins, l: c.losses,
+      pct: c.wins + c.losses > 0 ? c.wins / (c.wins + c.losses) : 0,
+      isPlayer: true
+    };
+    const all = [playerRow, ...state.career.bbStandings.rows];
+    return all.sort((a, b) => b.pct - a.pct || b.w - a.w);
+  }
+
+  function isInPlayoffs() {
+    const rows = getBBTableRows();
+    const pos = rows.findIndex(r => r.isPlayer);
+    return pos >= 0 && pos < 8;
+  }
+
+  // ── Basketball playoff helpers ───────────────────
+  function initPlayoffs() {
+    const rows = getBBTableRows();
+    const seeds = rows.slice(0, 8);
+    const playerSeed = seeds.findIndex(r => r.isPlayer);
+    // Bracket: 1v8, 2v7, 3v6, 4v5
+    const pairs = [[0,7],[1,6],[2,5],[3,4]];
+    return {
+      round: 1, // 1=Conf QF, 2=Conf SF, 3=Conf Final, 4=Finals
+      seeds: seeds.map(r => r.name),
+      bracket: pairs.map(([a, b]) => ({
+        teamA: seeds[a].name,
+        teamB: seeds[b].name,
+        winsA: 0, winsB: 0, done: false, winner: null
+      })),
+      playerSeed,
+      champion: null,
+    };
+  }
+
+  function simPlayoffGame() {
+    // Simulate one playoff week = one game in player's series
+    const c = state.career;
+    if (!c.playoffs) return null;
+    const pl = c.playoffs;
+    const playerIdx = pl.bracket.findIndex(
+      s => s.teamA === c.teamName || s.teamB === c.teamName
+    );
+    if (playerIdx === -1) {
+      // Player already eliminated — sim other series and advance
+      advancePlayoffRound();
+      return { eliminated: true };
+    }
+    const series = pl.bracket[playerIdx];
+    const isTeamA = series.teamA === c.teamName;
+    const playerStrength = avgStat(state.player);
+    const oppStrength = rand(50, 90);
+    const win = (playerStrength + rand(-15, 15)) > (oppStrength + rand(-15, 15));
+    if (win) { if (isTeamA) series.winsA++; else series.winsB++; c.wins++; }
+    else     { if (isTeamA) series.winsB++; else series.winsA++; c.losses++; }
+    const myWins = isTeamA ? series.winsA : series.winsB;
+    const oppWins = isTeamA ? series.winsB : series.winsA;
+    const oppName = isTeamA ? series.teamB : series.teamA;
+    if (myWins === 4 || oppWins === 4) {
+      series.done = true;
+      series.winner = myWins === 4 ? c.teamName : oppName;
+      if (oppWins === 4) {
+        // Player eliminated
+        const roundNames = ['', '1. Runde', 'Conference Semifinal', 'Conference Final', 'NBA Finals'];
+        addLog(`Playoffs beendet — Ausgeschieden in Runde ${pl.round} (${roundNames[pl.round]}) gegen ${oppName} ${myWins}:4 😤`, 'bad');
+        return { eliminated: true, round: pl.round, oppName };
+      } else {
+        // Series won
+        advancePlayoffRound();
+        if (pl.round > 4) {
+          // Champion!
+          pl.champion = c.teamName;
+          addLog(`🏆 NBA CHAMPION! Die ${c.teamName} sind Meister!`, 'special');
+          return { champion: true };
+        }
+        return { seriesWin: true, myWins, round: pl.round };
+      }
+    }
+    return { win, myWins, oppWins, oppName };
+  }
+
+  function advancePlayoffRound() {
+    const pl = state.career.playoffs;
+    // Sim remaining series
+    pl.bracket.forEach(s => {
+      if (!s.done) {
+        while (s.winsA < 4 && s.winsB < 4) {
+          const pa = rand(40, 90), pb = rand(40, 90);
+          if (pa > pb) s.winsA++; else s.winsB++;
+        }
+        s.done = true;
+        s.winner = s.winsA === 4 ? s.teamA : s.teamB;
+      }
+    });
+    pl.round++;
+    if (pl.round > 4) return;
+    // Build next round bracket
+    const winners = pl.bracket.map(s => s.winner);
+    pl.bracket = [
+      { teamA: winners[0], teamB: winners[1], winsA: 0, winsB: 0, done: false, winner: null },
+      { teamA: winners[2], teamB: winners[3], winsA: 0, winsB: 0, done: false, winner: null },
+    ];
+    if (pl.round === 4) {
+      // Finals: consolidate to 1 matchup
+      pl.bracket = [{ teamA: winners[0], teamB: winners[2], winsA: 0, winsB: 0, done: false, winner: null }];
+    }
   }
 
   // ── Computed helpers ───────────────────────────────
@@ -272,6 +442,9 @@ const App = (() => {
              : result === 'loss' ? clamp(p.morale - rand(5, 12), 0, 100)
              : p.morale;
     p.fame += result === 'win' ? rand(3, 8) : rand(0, 2);
+
+    // Simulate rival games for BB standings
+    if (state.sport === 'basketball') simBBRivalWeek();
 
     // Week advance
     c.week++;
@@ -745,6 +918,22 @@ const App = (() => {
   function endSeason() {
     const c = state.career;
     const p = state.player;
+    const isBasketball = state.sport === 'basketball';
+    const cfg = CONFIG[state.sport];
+
+    // Basketball: trigger playoffs at regularSeasonWeeks, not season end
+    if (isBasketball && c.week > (c.regularSeasonWeeks || 20) && !c.playoffs) {
+      if (isInPlayoffs()) {
+        c.playoffs = initPlayoffs();
+        const pos = getBBTableRows().findIndex(r => r.isPlayer) + 1;
+        addLog(`🏆 Playoffs erreicht! Seed #${pos} — Runde 1 beginnt!`, 'special');
+        return; // Don't end season yet — playoffs continue
+      } else {
+        addLog(`❌ Playoffs verpasst. Saison endet ohne Post-Season.`, 'bad');
+        // fall through to season end
+      }
+    }
+
     c.week = 1;
     c.season++;
     c.seasons++;
@@ -752,12 +941,18 @@ const App = (() => {
     p.skillPoints += 2;
     p.energy = 100;
     p.morale = clamp(p.morale + 10, 0, 100);
+    c.playoffs = null;
+
+    // Reset BB standings for new season
+    if (isBasketball) {
+      const teams = cfg.teamsByLeague[c.leagueIndex];
+      c.bbStandings = initBBStandings(c.leagueIndex, c.teamName);
+      c.weeksPerSeason = c.leagueIndex === 1 ? 38 : 24;
+      c.regularSeasonWeeks = c.leagueIndex === 1 ? 30 : 20;
+    }
 
     // Promotion / Relegation
     const winRate = c.wins / Math.max(c.wins + c.losses + c.draws, 1);
-    const cfg = CONFIG[state.sport];
-    const isBasketball = state.sport === 'basketball';
-    // Basketball: harder to stay in NBA (need >40%), G-League promotion needs >60%
     const promotionThreshold = isBasketball ? 0.60 : 0.55;
     const relegationThreshold = isBasketball ? 0.38 : 0.30;
 
@@ -1105,10 +1300,11 @@ const App = (() => {
     const c = state.career;
     const cfg = CONFIG[state.sport];
 
-    const tabs = ['home', 'stats', 'log', 'achievements'].map(t => `
-      <button class="tab ${t === activeTab ? 'active' : ''}" onclick="App.showHub('${t}')">${
-        { home: '🏠 Übersicht', stats: '📊 Stats', log: '📋 Log', achievements: '🏆 Erfolge' }[t]
-      }</button>`).join('');
+    const tabDefs = ['home', 'stats', 'log', 'achievements'];
+    if (state.sport === 'basketball') tabDefs.splice(1, 0, 'standings');
+    const tabLabels = { home: '🏠 Übersicht', standings: '📊 Tabelle', stats: '📌 Stats', log: '📋 Log', achievements: '🏆 Erfolge' };
+    const tabs = tabDefs.map(t => `
+      <button class="tab ${t === activeTab ? 'active' : ''}" onclick="App.showHub('${t}')">${tabLabels[t]}</button>`).join('');
 
     let content = '';
 
@@ -1163,6 +1359,66 @@ const App = (() => {
           </div>
         </div>` : ''}
       `;
+    }
+
+    if (activeTab === 'standings') {
+      const rows = getBBTableRows();
+      const c = state.career;
+      const inPlayoffs = c.playoffs !== null;
+      const regularWeeks = c.regularSeasonWeeks || 20;
+      const isPlayoffPhase = c.week > regularWeeks;
+      const playoffRoundNames = ['', '1. Runde (Best-of-7)', 'Conference Semifinal', 'Conference Final', 'NBA Finals'];
+
+      // Playoff bracket display
+      const playoffHtml = inPlayoffs ? (() => {
+        const pl = c.playoffs;
+        const rname = playoffRoundNames[pl.round] || `Runde ${pl.round}`;
+        const series = pl.bracket.find(s => s.teamA === c.teamName || s.teamB === c.teamName);
+        if (!series) return `<div class="card" style="text-align:center;color:var(--muted)">Ausgeschieden — Saison vorbei.</div>`;
+        const isA = series.teamA === c.teamName;
+        const myW = isA ? series.winsA : series.winsB;
+        const oppW = isA ? series.winsB : series.winsA;
+        const opp  = isA ? series.teamB : series.teamA;
+        return `
+          <div class="card" style="border-color:var(--basketball)">
+            <div style="font-size:.75rem;color:var(--basketball);text-transform:uppercase;font-weight:700;margin-bottom:8px">🏆 PLAYOFFS — ${rname}</div>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+              <div style="text-align:center">
+                <div style="font-weight:900;font-size:2rem;color:var(--football)">${myW}</div>
+                <div style="font-size:.8rem;font-weight:700">${c.teamName}</div>
+              </div>
+              <div style="color:var(--muted);font-size:1.2rem">vs</div>
+              <div style="text-align:center">
+                <div style="font-weight:900;font-size:2rem">${oppW}</div>
+                <div style="font-size:.8rem;color:var(--muted)">${opp}</div>
+              </div>
+            </div>
+            <div style="font-size:.78rem;color:var(--muted);margin-top:8px;text-align:center">Erster zu 4 Siegen gewinnt die Serie</div>
+          </div>`;
+      })() : '';
+
+      const tableHtml = `
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <h3 style="margin:0">${leagueName(state)} Standings</h3>
+            <span style="font-size:.78rem;color:var(--muted)">${isPlayoffPhase ? '🏆 Playoff-Phase' : `Woche ${c.week}/${regularWeeks} Regular Season`}</span>
+          </div>
+          <table class="table">
+            <tr><th>#</th><th>Team</th><th>S</th><th>N</th><th>%</th><th></th></tr>
+            ${rows.map((r, i) => `
+              <tr class="${r.isPlayer ? 'highlight' : ''}">
+                <td style="color:var(--muted);font-size:.8rem">${i + 1}</td>
+                <td>${r.isPlayer ? '<strong>' + r.name + ' ★</strong>' : r.name}</td>
+                <td>${r.w}</td>
+                <td>${r.l}</td>
+                <td style="color:${i < 8 ? 'var(--football)' : 'var(--muted)'}">${(r.pct * 100).toFixed(0)}%</td>
+                <td>${i === 7 ? '<span style="font-size:.7rem;color:var(--muted)">─ Playoff Cut</span>' : ''}</td>
+              </tr>`).join('')}
+          </table>
+          <div style="font-size:.75rem;color:var(--muted);margin-top:8px">★ = Dein Team • Top 8 qualifizieren sich für die Playoffs</div>
+        </div>`;
+
+      content = playoffHtml + tableHtml;
     }
 
     if (activeTab === 'stats') {
@@ -1329,6 +1585,27 @@ const App = (() => {
       addLog('Zu müde für ein Spiel! Erst ausruhen.', 'bad');
       showHub('home');
       return;
+    }
+    // Basketball: if in playoffs, run playoff game instead
+    if (state.sport === 'basketball' && state.career.playoffs) {
+      const res = simPlayoffGame();
+      if (res) {
+        if (res.champion) {
+          addLog(`🏆 NBA CHAMPION! ${state.career.teamName} sind Meister!`, 'special');
+          state.career.week = state.career.weeksPerSeason + 1; // trigger season end
+          endSeason();
+        } else if (res.eliminated) {
+          state.career.week = state.career.weeksPerSeason + 1;
+          endSeason();
+        } else {
+          const verb = res.win ? 'Sieg' : 'Niederlage';
+          addLog(`Playoffs R${state.career.playoffs?.round}: ${verb} — Serie ${res.myWins}:${res.oppWins} gegen ${res.oppName}`, res.win ? 'good' : 'bad');
+          state.career.week++;
+        }
+        saveGame();
+        showHub('standings');
+        return;
+      }
     }
     if (state.sport === 'football') {
       showFootballMatch();
