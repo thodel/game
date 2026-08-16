@@ -65,12 +65,33 @@ const App = (() => {
   ];
 
   // ── Persistence ────────────────────────────────────
-  const SAVE_KEY = 'sportsCareerGame_v1';
-  function saveGame() { localStorage.setItem(SAVE_KEY, JSON.stringify(state)); }
-  function loadGame() {
-    try { const d = localStorage.getItem(SAVE_KEY); return d ? JSON.parse(d) : null; } catch { return null; }
+  const SAVE_PREFIX = 'sportsCareer_v1_';
+  function saveKey(s) { return SAVE_PREFIX + (s?.player?.name || 'unnamed').replace(/\s+/g, '_'); }
+  function saveGame() {
+    if (!state || state._quickGame) return;
+    localStorage.setItem(saveKey(state), JSON.stringify(state));
   }
-  function clearSave() { localStorage.removeItem(SAVE_KEY); }
+  function loadGame(name) {
+    try {
+      const key = name ? SAVE_PREFIX + name.replace(/\s+/g, '_') : null;
+      if (key) { const d = localStorage.getItem(key); return d ? JSON.parse(d) : null; }
+      // Legacy: return first found save
+      return allSaves()[0] || null;
+    } catch { return null; }
+  }
+  function allSaves() {
+    const saves = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k.startsWith(SAVE_PREFIX)) continue;
+      try { const d = JSON.parse(localStorage.getItem(k)); if (d?.player?.name) saves.push(d); } catch {}
+    }
+    return saves.sort((a, b) => (b.career?.season || 0) - (a.career?.season || 0));
+  }
+  function clearSave(name) {
+    const key = name ? SAVE_PREFIX + name.replace(/\s+/g, '_') : saveKey(state);
+    localStorage.removeItem(key);
+  }
 
   // ── Utils ──────────────────────────────────────────
   function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
@@ -895,7 +916,21 @@ const App = (() => {
 
   // ── SCREEN: TITLE ─────────────────────────────────
   function showTitle() {
-    const saved = loadGame();
+    const saves = allSaves();
+    const savesHtml = saves.length === 0 ? '' : `
+      <div style="margin-top:28px;max-width:480px;margin-left:auto;margin-right:auto">
+        <div style="font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">💾 Gespeicherte Karrieren</div>
+        ${saves.map(s => `
+          <div class="card" style="display:flex;align-items:center;gap:14px;margin-bottom:10px;padding:14px 18px">
+            <span style="font-size:1.6rem">${CONFIG[s.sport].icon}</span>
+            <div style="flex:1;min-width:0">
+              <div style="font-weight:700">${s.player.name}</div>
+              <div style="color:var(--muted);font-size:.8rem">${CONFIG[s.sport].leagues[s.career.leagueIndex]} • Saison ${s.career.season} • Alter ${s.player.age}</div>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="App.continueGame('${s.player.name}')">Laden</button>
+            <button class="btn btn-ghost btn-sm" onclick="App.confirmDeleteSave('${s.player.name}')" title="Speicherstand l\u00f6schen">🗑️</button>
+          </div>`).join('')}
+      </div>`;
     render(`
       <div class="screen title-screen">
         <h1>🏟️ Sports Career</h1>
@@ -917,18 +952,7 @@ const App = (() => {
             <p>NBA-Rookie — oder G-League Grind?</p>
           </div>
         </div>
-        ${saved ? `
-        <div style="margin-top:32px">
-          <div class="card" style="max-width:360px;margin:0 auto">
-            <div style="font-size:.85rem;color:var(--muted);margin-bottom:10px">💾 Gespeicherter Spielstand</div>
-            <div style="font-weight:700">${saved.player.name} – ${CONFIG[saved.sport].name}</div>
-            <div style="color:var(--muted);font-size:.85rem">${CONFIG[saved.sport].leagues[saved.career.leagueIndex]} • Saison ${saved.career.season} • Alter ${saved.player.age}</div>
-            <div style="display:flex;gap:10px;margin-top:14px">
-              <button class="btn btn-primary" onclick="App.continueGame()">Weiterspielen</button>
-              <button class="btn btn-ghost btn-sm" onclick="App.confirmNewGame()">Neues Spiel</button>
-            </div>
-          </div>
-        </div>` : ''}
+        ${savesHtml}
       </div>
     `);
   }
@@ -1263,28 +1287,38 @@ const App = (() => {
     showHub();
   }
 
-  function continueGame() {
-    state = loadGame();
+  function continueGame(name) {
+    state = loadGame(name);
     showHub();
   }
 
-  function confirmNewGame() {
+  function confirmDeleteSave(name) {
     const modal = document.createElement('div');
     modal.className = 'modal-bg';
     modal.innerHTML = `
       <div class="modal">
-        <h3>⚠️ Neues Spiel?</h3>
-        <p>Dein gespeicherter Fortschritt wird gelöscht. Wirklich neu starten?</p>
+        <h3>⚠️ Karriere löschen?</h3>
+        <p>Karriere <strong>${name}</strong> wird unwiderruflich gelöscht.</p>
         <div class="modal-btns">
-          <button class="btn btn-danger" onclick="App._doNewGame()">Ja, neu starten</button>
+          <button class="btn btn-danger" onclick="App._doDeleteSave('${name}')">Ja, löschen</button>
           <button class="btn btn-ghost" onclick="this.closest('.modal-bg').remove()">Abbrechen</button>
         </div>
       </div>`;
     document.body.appendChild(modal);
   }
 
+  function _doDeleteSave(name) {
+    clearSave(name);
+    document.querySelector('.modal-bg')?.remove();
+    showTitle();
+  }
+
+  function confirmNewGame() {
+    // kept for compat — just go to title where user picks sport
+    showTitle();
+  }
+
   function _doNewGame() {
-    clearSave();
     document.querySelector('.modal-bg')?.remove();
     state = null;
     showTitle();
@@ -1354,6 +1388,8 @@ const App = (() => {
     showHub,
     startGame,
     continueGame,
+    confirmDeleteSave,
+    _doDeleteSave,
     confirmNewGame,
     _doNewGame,
     playMatch,
