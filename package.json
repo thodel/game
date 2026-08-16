@@ -1,0 +1,13 @@
+{
+  "name": "sports-career-game",
+  "version": "2.0.0",
+  "description": "Browser-based football & basketball career simulator",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "vitest": "^1.6.1"
+  }
+}
