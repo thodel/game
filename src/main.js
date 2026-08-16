@@ -4,6 +4,8 @@ import { newState }             from './core/state.js';
 import { saveGame, loadGame, clearSave, exportSave, importSave } from './core/persistence.js';
 import { avgStat, clamp, fmt }  from './core/utils.js';
 import { adapters, getAdapter } from './sports/adapters.js';
+import { footballAdapter }   from './sports/football/index.js';
+import { basketballAdapter } from './sports/basketball/index.js';
 import { render, renderStats, renderSeasonBar, statColor } from './ui/dom.js';
 import { addLog }               from './ui/log.js';
 
@@ -17,11 +19,11 @@ const App = {
       state = saved;
       if (!state._saveSeed) state._saveSeed = Date.now();
       state._rng = createRNG(state._saveSeed);
-      showHub();
+      App.showHub();
     } else if (saved && saved._loadError) {
       showLoadError(saved);
     } else {
-      showTitle();
+      App.showTitle();
     }
   },
 
@@ -39,14 +41,14 @@ const App = {
     if (!state) return;
     const adapter = getAdapter(state.sport);
     if (state.sport === 'football') {
-      showFootballMatch();
+      App.showFootballMatch();
     } else {
       const matchCtx = adapter.createMatch(state);
       const rng = createRNG(matchCtx.seed);
       const result = adapter.simulateHeadless(state, { rng, ...matchCtx });
       addLog(state, `Match gegen ${result.opponent}: ${result.score}`, result.result === 'win' ? 'good' : result.result === 'loss' ? 'bad' : 'neutral');
       saveGame(state);
-      showMatch(result);
+      App.showMatch(result);
     }
   },
 
@@ -58,9 +60,9 @@ const App = {
     p.energy = clamp(p.energy - state._rng.randInt(10, 20), 0, 100);
     p.money -= 50;
     c.week++;
-    if (c.week > c.weeksPerSeason) { endSeason(); }
+    if (c.week > c.weeksPerSeason) { App.endSeason(); }
     addLog(state, `Training: ${stat} +${gain}`, 'good');
-    saveGame(state); showHub();
+    saveGame(state); App.showHub();
   },
 
   doRest() {
@@ -68,9 +70,9 @@ const App = {
     p.energy = clamp(p.energy + state._rng.randInt(25, 45), 0, 100);
     p.morale = clamp(p.morale + state._rng.randInt(5, 15), 0, 100);
     c.week++;
-    if (c.week > c.weeksPerSeason) { endSeason(); }
+    if (c.week > c.weeksPerSeason) { App.endSeason(); }
     addLog(state, `Erholt. Energie +${25}, Moral +${10}`, 'neutral');
-    saveGame(state); showHub();
+    saveGame(state); App.showHub();
   },
 
   doSimSeason() {
@@ -88,17 +90,17 @@ const App = {
     results.forEach(r => {
       addLog(state, `${r.opponent}: ${r.score}`, r.result === 'win' ? 'good' : r.result === 'loss' ? 'bad' : 'neutral');
     });
-    saveGame(state); showHub();
+    saveGame(state); App.showHub();
   },
 
-  doNewGame() { state = null; clearSave(); showTitle(); },
+  doNewGame() { state = null; clearSave(); App.showTitle(); },
 
   spendSkillPoint(stat) {
     const p = state.player;
     if (p.skillPoints <= 0) return;
     p.stats[stat] = clamp(p.stats[stat] + state._rng.randInt(4, 8), 1, 99);
     p.skillPoints--;
-    saveGame(state); showHub();
+    saveGame(state); App.showHub();
   },
 
   // ── Season ─────────────────────────────────────────
@@ -177,7 +179,7 @@ const App = {
     if (liveMatch?.raf) cancelAnimationFrame(liveMatch.raf);
     liveMatch?.cleanup?.();
     liveMatch = null;
-    showHub();
+    App.showHub();
   },
 };
 
@@ -331,7 +333,7 @@ function _finishFootballMatch() {
   addLog(state, `${result === 'win' ? 'Sieg' : result === 'draw' ? 'Unentschieden' : 'Niederlage'} gegen ${m.opponent} (${matchResult.score})`, result === 'win' ? 'good' : result === 'loss' ? 'bad' : 'neutral');
   saveGame(state);
   liveMatch = null;
-  showMatch(matchResult);
+  App.showMatch(matchResult);
 }
 
 function _footballDist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
@@ -463,7 +465,7 @@ function _hubScreen() {
   const total = c.wins + c.losses + c.draws;
   const winRate = total > 0 ? Math.round((c.wins / total) * 100) : 0;
   const actions = _actionsScreen();
-  const logHtml = c.seasonLog.slice(0, 5).map(e => `<div class="log-entry ${e.type}"><span class="log-icon">${e.icon||'📋'}</span><span>${e.msg}</span></div>`).join('');
+  const logHtml = (state.log || []).slice(0, 5).map(e => `<div class="log-entry ${e.type}"><span class="log-icon">${e.icon||'📋'}</span><span>${e.msg}</span></div>`).join('');
   return `<div class="screen hub-screen">
     <div class="hud">
       <div class="hud-name">${p.name} <span class="hud-sport ${state.sport}">${cfg.icon} ${cfg.name}</span></div>
@@ -678,5 +680,5 @@ App.confirmCreate = function(sportId) {
   state._saveSeed = saveSeed;
   state._rng = rng;
   saveGame(state);
-  showHub();
+  App.showHub();
 };
