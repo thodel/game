@@ -43,6 +43,7 @@ export const basketballAdapter = {
   ],
 
   createMatch(state) {
+    const c = state.career;
     const leagueTeams = TEAMS_BY_LEAGUE[c.leagueIndex] || TEAMS_BY_LEAGUE[1];
     const opponent    = pickExcluding(state._rng, leagueTeams, state.career.teamName);
     return {
