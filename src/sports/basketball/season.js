@@ -4,6 +4,8 @@
 //  play-in and a best-of-seven playoff bracket.
 //  Pure logic: no DOM, so it runs headless in tests.
 // =====================================================
+import { createRNG, matchSeed } from '../../core/rng.js';
+
 export const SeasonEngine = (() => {
   'use strict';
 
@@ -21,7 +23,12 @@ export const SeasonEngine = (() => {
   const SEASON_DAYS = 172;   // late October to mid April
   const REST_MIN = 1;        // days between games for the same team, normally
 
-  const rnd = (a, b) => a + Math.random() * (b - a);
+  // Schedule building draws from the RNG handed to createSeason; each game
+  // result draws from an RNG derived from the season's stored seed, so a
+  // reloaded save resolves the same fixture the same way.
+  let R = createRNG(Date.now() >>> 0);
+  const random = () => R.next();
+  const rnd = (a, b) => a + random() * (b - a);
   const irnd = (a, b) => Math.floor(rnd(a, b + 1));
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const shuffle = arr => {
@@ -60,7 +67,7 @@ export const SeasonEngine = (() => {
     // Alternate hosts within each series; a global repair pass evens out the
     // odd-numbered ones afterwards.
     const add = (a, b, n) => {
-      const flip = Math.random() < 0.5;
+      const flip = random() < 0.5;
       for (let i = 0; i < n; i++) {
         const aHome = flip ? i % 2 === 1 : i % 2 === 0;
         games.push(aHome ? { home: a.id, away: b.id } : { home: b.id, away: a.id });
@@ -86,7 +93,7 @@ export const SeasonEngine = (() => {
         let stuck = false;
         while (!stuck) {
           const left = pool.filter(t => need.get(t.id) > 0)
-            .sort((a, b) => need.get(b.id) - need.get(a.id) || Math.random() - 0.5);
+            .sort((a, b) => need.get(b.id) - need.get(a.id) || random() - 0.5);
           if (!left.length) break;
           const a = left[0];
           const b = left.slice(1).find(x => x.div !== a.div && !used.has(`${Math.min(a.id, x.id)}-${Math.max(a.id, x.id)}`));
@@ -147,7 +154,7 @@ export const SeasonEngine = (() => {
           if (recent.includes(day)) return false;
           const yesterday = recent.includes(day - 1);
           if (yesterday && recent.includes(day - 2)) return false;   // no 3-in-3
-          return !yesterday || Math.random() < 0.09 + pressure * 0.12;
+          return !yesterday || random() < 0.09 + pressure * 0.12;
         });
         if (!ok) continue;
         g.day = day;
@@ -177,12 +184,14 @@ export const SeasonEngine = (() => {
     return scheduled.sort((a, b) => a.day - b.day);
   }
 
-  function createSeason(names, myTeamName) {
+  function createSeason(names, myTeamName, rng) {
+    R = rng || createRNG(Date.now() >>> 0);
+    const seed = R.getSeed();
     const teams = buildTeams(names);
     const games = assignDays(teams, buildPairings(teams));
     const me = teams.find(t => t.name === myTeamName) || teams[0];
     return {
-      teams, games, day: 0, myTeam: me.id,
+      teams, games, day: 0, myTeam: me.id, seed,
       // A 30-team league lands on 82; a smaller tier lands wherever its structure allows
       gamesPerTeam: Math.round(games.length * 2 / teams.length),
       played: 0, playoffs: null, champion: null,
@@ -192,7 +201,13 @@ export const SeasonEngine = (() => {
   // ── Resolving games ───────────────────────────────
   // Calibrated against the live engine's own output: ~113 points a side,
   // with a home edge and no ties.
+  const gameRNG = (season, game, salt) => {
+    const g = createRNG(matchSeed(season.seed ?? 1, game.day ?? 0, (game.home + 1) * 97 + (game.away + 1) * 7 + salt));
+    return (a, b) => a + g.next() * (b - a);
+  };
+
   function resolve(season, game) {
+    const rnd = gameRNG(season, game, 0), irnd = (a, b) => Math.floor(rnd(a, b + 1));
     const home = season.teams[game.home], away = season.teams[game.away];
     const base = (t, edge) => 113 + (t.strength - 73) * 0.85 + edge + rnd(-13, 13);
     let hs = Math.round(base(home, 2.4)), as = Math.round(base(away, 0));
@@ -202,6 +217,7 @@ export const SeasonEngine = (() => {
 
   // Playoff basketball is tighter: rotations shorten and the better team shows.
   function resolvePlayoff(season, game) {
+    const rnd = gameRNG(season, game, 500 + (game.n || 0)), irnd = (a, b) => Math.floor(rnd(a, b + 1));
     const home = season.teams[game.home], away = season.teams[game.away];
     const base = (t, edge) => 110 + (t.strength - 73) * 1.35 + edge + rnd(-9.5, 9.5);
     let hs = Math.round(base(home, 3.2)), as = Math.round(base(away, 0));

@@ -4,6 +4,8 @@
 //  The career mode owns progression; this engine only
 //  plays a match and returns a box score.
 // =====================================================
+import { createRNG } from '../../core/rng.js';
+
 export const BasketballEngine = (() => {
   'use strict';
 
@@ -55,7 +57,11 @@ export const BasketballEngine = (() => {
 
   // ── Utils ─────────────────────────────────────────
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-  const rnd = (a, b) => a + Math.random() * (b - a);
+  // Every random draw in a match comes from one source, injected by the caller
+  // (the career derives it from the save seed) so a game can be replayed.
+  let R = createRNG(Date.now() >>> 0);
+  const random = () => R.next();
+  const rnd = (a, b) => a + random() * (b - a);
   const irnd = (a, b) => Math.floor(rnd(a, b + 1));
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
   const lerp = (a, b, t) => a + (b - a) * t;
@@ -180,6 +186,7 @@ export const BasketballEngine = (() => {
   }
 
   function start(opts) {
+    R = opts.rng || createRNG(Date.now() >>> 0);
     const canvas = document.getElementById(opts.canvasId);
     if (!canvas) return;
     RULES.quarterMinutes = opts.quarterMinutes || RULES.quarterMinutes;
@@ -217,7 +224,7 @@ export const BasketballEngine = (() => {
     M.ox = (canvas.width - COURT.length * M.S) / 2;
     M.oy = (canvas.height - COURT.width * M.S) / 2;
 
-    resetPositions(Math.random() < 0.5 ? 'home' : 'away', { tip: true });
+    resetPositions(random() < 0.5 ? 'home' : 'away', { tip: true });
     say(`Sprungball — ${M[M.possession].name} hat den Ball`, 'neutral');
     bindInput();
     syncScoreboard();
@@ -348,11 +355,11 @@ export const BasketballEngine = (() => {
       h.cooldown = 0.9;
       const handler = M.ball.holder;
       const p = 0.16 + (h.ratings.defense - handler.ratings.handle) / 420;
-      if (Math.random() < clamp(p, 0.03, 0.35)) {
+      if (random() < clamp(p, 0.03, 0.35)) {
         h.box.stl++; handler.box.tov++;
         say(`${h.name} klaut den Ball!`, h.side === 'home' ? 'player' : 'opponent');
         giveBall(h);
-      } else if (Math.random() < 0.22) {
+      } else if (random() < 0.22) {
         foul(h, handler, false);
       }
     }
@@ -492,9 +499,9 @@ export const BasketballEngine = (() => {
         return steer(p, out, 0.8, dt);
       }
       const cut = p.cutUntil > M.gameTime;
-      if (!cut && p.role !== 'C' && Math.random() < dt * 0.12) {
+      if (!cut && p.role !== 'C' && random() < dt * 0.12) {
         const mark = nearestOpp(p);
-        if (dist(p, mark) > 7 && Math.random() < p.ratings.iq / 260) p.cutUntil = M.gameTime + 1.4;
+        if (dist(p, mark) > 7 && random() < p.ratings.iq / 260) p.cutUntil = M.gameTime + 1.4;
       }
       steer(p, cut ? hoop : { x: spot.x + Math.sin(M.gameTime * 0.6 + p.number) * 1.6, y: spot.y + Math.cos(M.gameTime * 0.5 + p.number) * 1.6 }, cut ? 0.95 : 0.6, dt);
     });
@@ -509,7 +516,7 @@ export const BasketballEngine = (() => {
       let target;
       if (man === holder) {
         target = towards(man, dh, 3.2);
-        if (dist(p, man) < 4 && man.human && Math.random() < dt * 0.5) p.jump = Math.max(p.jump, 0.0);
+        if (dist(p, man) < 4 && man.human && random() < dt * 0.5) p.jump = Math.max(p.jump, 0.0);
       } else {
         const gap = 4 + clamp(dist(man, M.ball) / 4.5, 0, 5);
         target = towards(man, dh, gap);
@@ -521,7 +528,7 @@ export const BasketballEngine = (() => {
       steer(p, target, 0.92, dt);
       // contest: jump when a shot is likely right next to you
       const rimAttack = holder && dist(holder, dh) < 10;
-      if (holder && dist(p, holder) < 4.2 && p.jump <= 0 && Math.random() < dt * (rimAttack ? 2.2 : 0.9)) p.jump = 0.5;
+      if (holder && dist(p, holder) < 4.2 && p.jump <= 0 && random() < dt * (rimAttack ? 2.2 : 0.9)) p.jump = 0.5;
     });
   }
 
@@ -622,7 +629,7 @@ export const BasketballEngine = (() => {
     const speed = 42 + from.ratings.iq / 10;
     // Errant pass: long or contested feeds sail on you
     const risk = clamp(0.0015 + passLaneRisk(from, to) * 0.016 + d / 9000 + (85 - from.ratings.iq) / 14000, 0, 0.03);
-    const target = Math.random() < risk
+    const target = random() < risk
       ? { x: clamp(to.x + rnd(-9, 9), -3, COURT.length + 3), y: clamp(to.y + rnd(-9, 9), -3, COURT.width + 3) }
       : to;
     M.ball.state = 'pass';
@@ -658,7 +665,7 @@ export const BasketballEngine = (() => {
       if (dist(p, rim) < 11 && Math.hypot(p.vx, p.vy) > p.maxSpeed * 0.4) {
         for (const q of M.players) {
           if (q.side === p.side || dist(q, p) > 2.2 || q.cooldown > 0) continue;
-          if (Math.random() < 0.40 * dt) { q.cooldown = 1.2; foul(q, p, 0, false); return; }
+          if (random() < 0.40 * dt) { q.cooldown = 1.2; foul(q, p, 0, false); return; }
         }
       }
       const bob = Math.sin(M.gameTime * 9) * 0.5;
@@ -670,7 +677,7 @@ export const BasketballEngine = (() => {
         if (M.ball.holder !== p) return;
         if (q.side === p.side || dist(q, p) > 2.4 || q.cooldown > 0) return;
         const chance = 0.015 * (q.ratings.defense / 100) * (1 - p.ratings.handle / 190) * dt;
-        if (Math.random() < chance) {
+        if (random() < chance) {
           q.cooldown = 1.1; q.box.stl++; p.box.tov++;
           say(`Ballverlust — ${q.name} greift zu`, q.side === 'home' ? 'player' : 'opponent');
           giveBall(q);
@@ -713,7 +720,7 @@ export const BasketballEngine = (() => {
         if (q.side === b.from.side || b.seen.has(q)) continue;
         if (dist(q, b) < 1.3) {
           b.seen.add(q);
-          if (Math.random() < 0.085) {
+          if (random() < 0.085) {
             q.box.stl++; b.from.box.tov++;
             say(`${q.name} fängt den Pass ab`, q.side === 'home' ? 'player' : 'opponent');
             return giveBall(q);
@@ -751,7 +758,7 @@ export const BasketballEngine = (() => {
         const d = dist(q, b);
         if (d > q.r + 1.6 || q.cooldown > 0) return;
         const inside = b.rebound && q.side !== b.rebound.offSide ? 0.10 : 0;
-        const score = q.ratings.reb / 100 + inside + Math.random() * 0.6 - d * 0.15;
+        const score = q.ratings.reb / 100 + inside + random() * 0.6 - d * 0.15;
         if (score > bestScore) { bestScore = score; claim = q; }
       });
       if (claim) {
@@ -813,10 +820,10 @@ export const BasketballEngine = (() => {
     const p = clamp(shotQuality(shooter, def) + (timing || 0), 0.02, 0.96);
 
     const blocked = def.jump > 0 && dd < 4.0 &&
-      Math.random() < clamp(0.14 + (def.ratings.defense - 55) / 500 + (d < 6 ? 0.07 : 0), 0.02, 0.34);
+      random() < clamp(0.14 + (def.ratings.defense - 55) / 500 + (d < 6 ? 0.07 : 0), 0.02, 0.34);
     const fouled = !blocked && dd < 3.0 &&
-      Math.random() < 0.14 + (def.jump > 0 ? 0.11 : 0) + (d < 6 ? 0.13 : 0);
-    const made = !blocked && Math.random() < p;
+      random() < 0.14 + (def.jump > 0 ? 0.11 : 0) + (d < 6 ? 0.13 : 0);
+    const made = !blocked && random() < p;
 
     shooter.box.fga++;
     if (val === 3) shooter.box.tpa++;
@@ -957,7 +964,7 @@ export const BasketballEngine = (() => {
     ft.locked = true;
     const s = ft.shooter;
     const p = clamp(0.575 + s.ratings.ft / 100 * 0.25 + bonus, 0.25, 0.98);
-    const made = Math.random() < p;
+    const made = random() < p;
     s.box.fta++;
     if (made) { s.box.ftm++; score(s, 1); }
     ft.left--;
@@ -1006,7 +1013,7 @@ export const BasketballEngine = (() => {
     if (M.quarter === 3) say('Seitenwechsel', 'neutral');
     M.phase = 'dead';
     M.deadUntil = RULES.inbound * 2;
-    resetPositions(Math.random() < 0.5 ? 'home' : 'away', { tip: M.quarter > RULES.quarters });
+    resetPositions(random() < 0.5 ? 'home' : 'away', { tip: M.quarter > RULES.quarters });
     syncScoreboard();
   }
 

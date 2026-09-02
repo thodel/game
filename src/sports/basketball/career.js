@@ -14,7 +14,7 @@ import { createRNG, matchSeed } from '../../core/rng.js';
 const WEEKLY_SKILL_POINTS = 1;
 let pendingGame = null;   // the fixture the live engine is currently playing
 
-const rnd = (r, a, b) => (r ? r.randInt(a, b) : Math.floor(a + Math.random() * (b - a + 1)));
+const rnd = (r, a, b) => (r || createRNG(Date.now() >>> 0)).randInt(a, b);
 
 // ── Season lifecycle ──────────────────────────────────
 export function ensureSeason(state, teamsByLeague) {
@@ -22,7 +22,7 @@ export function ensureSeason(state, teamsByLeague) {
   const stale = !c.nba || c.nbaSeason !== c.season || c.nbaTeam !== c.teamName || c.nbaLeague !== c.leagueIndex;
   if (stale) {
     const pool = teamsByLeague[c.leagueIndex] || teamsByLeague[teamsByLeague.length - 1];
-    c.nba = SeasonEngine.createSeason(pool, c.teamName);
+    c.nba = SeasonEngine.createSeason(pool, c.teamName, createRNG(matchSeed(state._saveSeed || 42, c.season, 777)));
     c.nbaSeason = c.season;
     c.nbaTeam = c.teamName;
     c.nbaLeague = c.leagueIndex;
@@ -81,8 +81,8 @@ export function nextGameInfo(state) {
 }
 
 // ── Results ───────────────────────────────────────────
-function simulatedLine(state, won) {
-  const s = state.player.stats, r = state._rng;
+function simulatedLine(state, won, r = state._rng) {
+  const s = state.player.stats;
   const g = k => clamp(Math.round(s[k] ?? 50), 15, 99);
   const role = BasketballEngine.ROLE_BY_LABEL[state.player.position] || 'SF';
   const w = { PG: { reb: .35, ast: 1.5 }, SG: { reb: .5, ast: .9 }, SF: { reb: .75, ast: .8 },
@@ -107,8 +107,8 @@ function simulatedLine(state, won) {
   };
 }
 
-function applyResult(state, { myScore, oppScore, opponentName, line, isPlayoff, restDays = 1 }) {
-  const c = state.career, p = state.player, r = state._rng;
+function applyResult(state, { myScore, oppScore, opponentName, line, isPlayoff, restDays = 1, rng }) {
+  const c = state.career, p = state.player, r = rng || state._rng;
   const won = myScore > oppScore;
   if (won) c.wins++; else c.losses++;
   const isNBA = c.leagueIndex === 1;
@@ -294,8 +294,10 @@ export function startMatch(state, App) {
   const quarterMinutes = Number(document.getElementById('bb-quarter-length')?.value || 2);
   document.getElementById('bb-tipoff')?.remove();
   const level = c.leagueIndex >= 1 ? 76 : 60;
+  const fixtureKey = pendingGame?.fixture ? pendingGame.fixture.day * 10 + (pendingGame.isHome ? 1 : 0) : 9500 + (pendingGame?.playoff?.game?.n || 0);
   BasketballEngine.start({
     canvasId: 'bb-canvas',
+    rng: createRNG(matchSeed(state._saveSeed || 42, c.season, fixtureKey)),
     quarterMinutes,
     home: { name: c.teamName, strength: clamp(level + rnd(state._rng, -4, 4), 35, 95) },
     away: { name: pendingGame?.opponent || 'Gegner', strength: clamp(level + rnd(state._rng, -6, 8), 35, 96) },
@@ -401,8 +403,11 @@ function simulateFixture(state, { opponentName, isHome, backToBack, restDays, se
   });
   let myScore = sim.homeScore, oppScore = sim.awayScore;
   if (myScore === oppScore) oppScore -= 2;   // the model settles ties, this is belt and braces
-  const line = { ...simulatedLine(state, myScore > oppScore), pts: sim.human.pts, ast: sim.human.ast, min: sim.human.min };
-  const money = applyResult(state, { myScore, oppScore, opponentName, line, restDays, isPlayoff });
+  // Everything about this fixture — the game, the garnish on the player's line,
+  // the money and the energy swing — comes from the fixture's own RNG, so the
+  // same save replays it to the last number.
+  const line = { ...simulatedLine(state, myScore > oppScore, rng), pts: sim.human.pts, ast: sim.human.ast, min: sim.human.min };
+  const money = applyResult(state, { myScore, oppScore, opponentName, line, restDays, isPlayoff, rng });
   return { sim, myScore, oppScore, line, money };
 }
 
