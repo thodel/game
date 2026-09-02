@@ -442,3 +442,9 @@ body {
 .result-banner.win  { background:#2ea04322; border:1px solid #2ea043; }
 .result-banner.loss { background:#f8514922; border:1px solid #f85149; }
 .result-banner.draw { background:#d2992222; border:1px solid #d29922; }
+
+/* ── Basketball: per-game averages on the hub ───── */
+.bb-avg-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 10px; }
+.bb-avg-grid div { display: flex; flex-direction: column; align-items: center; padding: 6px 4px; background: var(--surface2); border-radius: 4px; }
+.bb-avg-grid b { font-size: 1.05rem; }
+.bb-avg-grid span { font-size: .62rem; color: var(--muted); letter-spacing: .08em; }

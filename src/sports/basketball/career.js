@@ -81,6 +81,36 @@ export function nextGameInfo(state) {
   };
 }
 
+// ── Career stat block ─────────────────────────────────
+// Basketball keeps its own totals rather than overloading career.goals: every
+// counting stat, made/attempted, minutes, single-game bests and the double-
+// double / triple-double counts the achievements read.
+const KEYS = ['pts', 'reb', 'ast', 'stl', 'blk', 'tov', 'fgm', 'fga', 'tpm', 'tpa', 'ftm', 'fta', 'min'];
+export function statBlock(c) {
+  if (!c.bb) c.bb = { games: 0, playoffGames: 0, best: {}, doubleDoubles: 0, tripleDoubles: 0 };
+  KEYS.forEach(k => { if (c.bb[k] === undefined) c.bb[k] = 0; });
+  return c.bb;
+}
+function recordLine(c, line, isPlayoff) {
+  const b = statBlock(c);
+  b.games++; if (isPlayoff) b.playoffGames++;
+  KEYS.forEach(k => { b[k] += Number(line[k]) || 0; });
+  ['pts', 'reb', 'ast', 'stl', 'blk'].forEach(k => { b.best[k] = Math.max(b.best[k] || 0, Number(line[k]) || 0); });
+  const tens = ['pts', 'reb', 'ast', 'stl', 'blk'].filter(k => (Number(line[k]) || 0) >= 10).length;
+  if (tens >= 2) b.doubleDoubles++;
+  if (tens >= 3) b.tripleDoubles++;
+}
+export function averages(c) {
+  const b = statBlock(c), n = Math.max(1, b.games);
+  const pct = (m, a) => (a ? (m / a * 100).toFixed(1) : '—');
+  return {
+    games: b.games, ppg: (b.pts / n).toFixed(1), rpg: (b.reb / n).toFixed(1), apg: (b.ast / n).toFixed(1),
+    spg: (b.stl / n).toFixed(1), bpg: (b.blk / n).toFixed(1), mpg: (b.min / n).toFixed(1),
+    fg: pct(b.fgm, b.fga), tp: pct(b.tpm, b.tpa), ft: pct(b.ftm, b.fta), best: b.best,
+    dd: b.doubleDoubles, td: b.tripleDoubles,
+  };
+}
+
 // ── Results ───────────────────────────────────────────
 function simulatedLine(state, won, r = state._rng) {
   const s = state.player.stats;
@@ -118,6 +148,7 @@ function applyResult(state, { myScore, oppScore, opponentName, line, isPlayoff, 
   c.goals += line.pts;
   c.assists += line.ast;
   c.bestMatchGoals = Math.max(c.bestMatchGoals, line.pts);
+  recordLine(c, line, isPlayoff);
   p.money += money; p.totalEarned += money;
   // A day off gives most of it back; the second night of a back-to-back does not
   const recovery = restDays <= 0 ? rnd(r, 2, 6) : Math.min(3, restDays) * rnd(r, 11, 17);
@@ -565,7 +596,17 @@ export function startNextSeason(state, App, teamsByLeague) {
 
 // ── Screens that belong to basketball, not to the app shell ──
 export function hubSection(state) {
-  if (!state.league || !Object.keys(state.league.teams).length) return '';
+  const a = averages(state.career);
+  const mine = a.games ? `<div class="card">
+    <div style="font-size:.8rem;color:var(--muted);margin-bottom:8px">📊 DEINE SAISON — ${a.games} Spiele · ${a.mpg} MIN</div>
+    <div class="bb-avg-grid">
+      <div><b>${a.ppg}</b><span>PPG</span></div><div><b>${a.rpg}</b><span>RPG</span></div><div><b>${a.apg}</b><span>APG</span></div>
+      <div><b>${a.spg}</b><span>SPG</span></div><div><b>${a.bpg}</b><span>BPG</span></div>
+      <div><b>${a.fg}%</b><span>FG</span></div><div><b>${a.tp}%</b><span>3P</span></div><div><b>${a.ft}%</b><span>FT</span></div>
+    </div>
+    <div style="font-size:.78rem;color:var(--muted);margin-top:8px">Bestwerte: ${a.best.pts || 0} PTS · ${a.best.reb || 0} REB · ${a.best.ast || 0} AST · Double-Doubles ${a.dd} · Triple-Doubles ${a.td}</div>
+  </div>` : '';
+  if (!state.league || !Object.keys(state.league.teams).length) return mine;
   const { scorers, assisters } = getLeagueLeaders(state);
   const row = pl => `<div style="display:flex;justify-content:space-between;font-size:.82rem;padding:2px 0">
     <span>${pl.name} <span style="color:var(--muted);font-size:.75rem">(${pl.team})</span></span>
@@ -575,7 +616,7 @@ export function hubSection(state) {
     <span>${pl.name} <span style="color:var(--muted);font-size:.75rem">(${pl.team})</span></span>
     <strong>${pl.stats.ast} Ast</strong>
   </div>`;
-  return `<div class="card">
+  return mine + `<div class="card">
     <div style="font-size:.8rem;color:var(--muted);margin-bottom:8px">🏆 LIGA — TOP SCORER</div>
     ${scorers.length ? scorers.map(row).join('') : '<div style="color:var(--muted);font-size:.85rem">Noch keine Saison-Daten.</div>'}
     <div style="font-size:.8rem;color:var(--muted);margin:10px 0 6px">🎯 TOP ASSISTGEBER</div>

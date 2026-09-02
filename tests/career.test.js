@@ -148,9 +148,11 @@ describe('checkAchievements', () => {
   });
 
   it('fires hat_trick when 3+ goals in a match', () => {
-    const s = makeState({ career: { bestMatchGoals: 3 } });
-    const unlocked = checkAchievements(s);
-    expect(unlocked.map(a => a.id)).toContain('hat_trick');
+    const s = makeState({ sport: 'football', career: { bestMatchGoals: 3 } });
+    expect(checkAchievements(s, footballAdapter.achievements).map(a => a.id)).toContain('hat_trick');
+    // a basketball career never sees an achievement about Tore
+    const bb = makeState({ sport: 'basketball', career: { bestMatchGoals: 3 } });
+    expect(checkAchievements(bb, basketballAdapter.achievements).map(a => a.id)).not.toContain('hat_trick');
   });
 
   it('fires promoted when first promotion happens', () => {
@@ -169,6 +171,13 @@ describe('checkAchievements', () => {
     const s = makeState({ sport: 'basketball', career: { leagueIndex: 1, wins: 1 } });
     const unlocked = checkAchievements(s, basketballAdapter.achievements);
     expect(unlocked.map(a => a.id)).toContain('legend');
+  });
+
+  it('fires basketball-native achievements from the stat block', () => {
+    const s = makeState({ sport: 'basketball', career: { bb: { games: 3, pts: 150, best: { pts: 52, reb: 21, ast: 16 }, tripleDoubles: 1, doubleDoubles: 2 } } });
+    const ids = checkAchievements(s, basketballAdapter.achievements).map(a => a.id);
+    ['triple_double', 'fifty_piece', 'glass_cleaner', 'floor_general'].forEach(id => expect(ids).toContain(id));
+    expect(ids).not.toContain('thirty_ppg');   // 50 ppg but only 3 games
   });
 
   it('only fires each achievement once', () => {

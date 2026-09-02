@@ -198,6 +198,11 @@ export const basketballAdapter = {
     { id: 'g_league',     name: 'G-League Grind', desc: 'In die G-League abgestiegen',   icon: '😤', check: s => s.career.relegations >= 1 },
     { id: 'nba_star',     name: 'NBA Star',     desc: '3 Saisons in der NBA überlebt',    icon: '⭐', check: s => s.career.leagueIndex === 1 && s.career.seasons >= 3 },
     { id: 'max_contract', name: 'Max Contract', desc: '10 Mio. € verdient',               icon: '💎', check: s => s.player.totalEarned >= 10000000 },
+    { id: 'triple_double', name: 'Triple-Double', desc: 'Zweistellig in drei Kategorien in einem Spiel', icon: '📊', check: s => (s.career.bb?.tripleDoubles || 0) >= 1 },
+    { id: 'fifty_piece',   name: '50-Punkte-Spiel', desc: '50+ Punkte in einem Spiel',       icon: '🔥', check: s => (s.career.bb?.best?.pts || 0) >= 50 },
+    { id: 'glass_cleaner', name: 'Glass Cleaner', desc: '20+ Rebounds in einem Spiel',       icon: '🧹', check: s => (s.career.bb?.best?.reb || 0) >= 20 },
+    { id: 'floor_general', name: 'Floor General', desc: '15+ Assists in einem Spiel',        icon: '🎯', check: s => (s.career.bb?.best?.ast || 0) >= 15 },
+    { id: 'thirty_ppg',    name: '30er-Schnitt',  desc: '30+ Punkte im Schnitt nach 20 Spielen', icon: '👑', check: s => (s.career.bb?.games || 0) >= 20 && s.career.bb.pts / s.career.bb.games >= 30 },
   ],
   boxScoreFields: [
     { key: 'goals',        label: 'Punkte' },

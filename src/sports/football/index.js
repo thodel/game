@@ -35,7 +35,8 @@ export const footballAdapter = {
   teamPool(leagueIndex) { return TEAM_NAMES; },
   actionCard: { label: 'Spiel starten', icon: '⚽', desc: '11 vs 11 im Stadion' },
   achievements: [
-    { id: 'legend', name: 'Legende', desc: 'Top-Liga erreicht', icon: '👑', check: s => s.career.leagueIndex >= 5 },
+    { id: 'legend',    name: 'Legende',       desc: 'Top-Liga erreicht',       icon: '👑',    check: s => s.career.leagueIndex >= 5 },
+    { id: 'hat_trick', name: 'Hattrick-Held', desc: '3+ Tore in einem Spiel', icon: '⚽⚽⚽', check: s => s.career.bestMatchGoals >= 3 },
   ],
   boxScoreFields: [
     { key: 'goals',     label: 'Tore' },
