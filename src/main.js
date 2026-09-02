@@ -80,16 +80,8 @@ const App = {
     render(_basketballScoutScreen({ opponent: info.opponent.name }, adapter.getScoutingInfo(oppTeamData.roster)));
   },
 
-  doBasketballMatch() {
-    if (!state) return;
-    const adapter  = getAdapter(state.sport);
-    const matchCtx = adapter.createMatch(state);
-    const rng      = createRNG(matchCtx.seed);
-    const result   = adapter.simulateHeadless(state, { rng, ...matchCtx });
-    addLog(state, `Match gegen ${result.opponent}: ${result.score}`, result.result === 'win' ? 'good' : result.result === 'loss' ? 'bad' : 'neutral');
-    saveGame(state);
-    App.showMatch(result);
-  },
+  // The schedule owns every basketball game: this simulates the next fixture.
+  doBasketballMatch() { App.bbSimulate(); },
 
   doTraining(stat) {
     const p = state.player, c = state.career;
@@ -126,6 +118,8 @@ const App = {
 
   doSimSeason() {
     if (!state) return;
+    // Basketball has a schedule; the season runs the rest of it through the same game model
+    if (state.sport === 'basketball') return App.bbSimSeason();
     const adapter = getAdapter(state.sport);
     const results = [];
     const c = state.career;
@@ -588,7 +582,8 @@ function _basketballScoutScreen(matchCtx, scouting) {
       <div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">STARTAUFSTELLUNG GEGNER</div>
       ${starterRows}
     </div>
-    <button class="btn btn-primary btn-block" onclick="App.doBasketballMatch()">Spielen 🏀</button>
+    <button class="btn btn-primary btn-block" onclick="App.bbPlay()">Spielen 🏀</button>
+    <button class="btn btn-ghost btn-block" onclick="App.bbGameDay()">← Spieltag</button>
     <button class="btn btn-ghost btn-block" onclick="App.showHub()">← Zurück</button>
   </div>`;
 }
@@ -686,16 +681,18 @@ function _basketballMatchScreen(result) {
   const cfg      = getAdapter(state.sport);
   const teamName = state.career.teamName;
   const oppName  = result.opponent;
-  const homeTotal = (result.playerGoals || 0) + 50;
-  const awayTotal = (result.oppGoals    || 0) + 50;
+  const homeTotal = result.playerGoals ?? Number(String(result.score).split(':')[0]) ?? 0;
+  const awayTotal = result.oppGoals    ?? Number(String(result.score).split(':')[1]) ?? 0;
 
   // Deterministic display RNG (does NOT advance the game-state RNG)
   const dSeed = ((result.playerGoals || 0) * 2654435761 + (result.oppGoals || 0) * 1013904223 + ((result.money || 0) & 0xffff)) >>> 0;
   const drng  = createRNG(dSeed || 42);
 
   // Quarter scores — generated ONCE and shared with play-by-play so markers are consistent
-  const homeQs = generateQuarterScores(homeTotal, drng);
-  const awayQs = generateQuarterScores(awayTotal, drng);
+  // Real quarter scores when the game produced them (simulated or played live);
+  // a generated split only for results that carry none.
+  const homeQs = result.quarters?.home?.length === 4 ? result.quarters.home : generateQuarterScores(homeTotal, drng);
+  const awayQs = result.quarters?.away?.length === 4 ? result.quarters.away : generateQuarterScores(awayTotal, drng);
 
   // Play-by-play commentary
   const { html: pbpHtml, lastPlayerEventText } = generatePlayByPlay(result.events, result, state, drng, homeQs, awayQs);
@@ -725,41 +722,28 @@ function _basketballMatchScreen(result) {
                     : result.result === 'loss' ? '😤 NIEDERLAGE'
                     : `🤝 UNENTSCHIEDEN +€${fmt(result.money)}`;
 
-  // Box score
-  const BFIRST = ['T.','M.','K.','D.','J.','R.','A.','B.','L.','N.'];
-  const BLAST  = ['Weber','Müller','Fischer','Schmidt','Koch','Wagner','Bauer','Richter','Klein','Wolf'];
-  const usedLast = new Set();
-  const genTm = () => {
-    let ln; do { ln = BLAST[drng.randInt(0, BLAST.length - 1)]; } while (usedLast.has(ln));
-    usedLast.add(ln);
-    return { name: `${BFIRST[drng.randInt(0, BFIRST.length - 1)]} ${ln}`, min: drng.randInt(15, 32), pts: drng.randInt(4, 20), ast: drng.randInt(1, 6), reb: drng.randInt(2, 9) };
-  };
-  const teammates = [genTm(), genTm(), genTm(), genTm()];
-  const humanRow  = { name: state.player.name, min: drng.randInt(28, 40), pts: result.personal, ast: result.assists, reb: drng.randInt(2, 10) };
-
-  const OFIRST = ['K.','J.','M.','A.','D.','R.'];
-  const OLAST  = ['Johnson','Williams','Brown','Davis','Miller','Wilson'];
-  const oppStarName = `${OFIRST[drng.randInt(0, OFIRST.length-1)]} ${OLAST[drng.randInt(0, OLAST.length-1)]}`;
-  const oppStar = {
-    name: `★ ${oppStarName} (${awayAbbr})`,
-    min:  result.result === 'loss' ? drng.randInt(36, 42) : drng.randInt(28, 36),
-    pts:  result.result === 'loss' ? drng.randInt(26, 40) : drng.randInt(12, 24),
-    ast:  result.result === 'loss' ? drng.randInt(6, 12)  : drng.randInt(2, 7),
-    reb:  result.result === 'loss' ? drng.randInt(8, 14)  : drng.randInt(3, 8),
-  };
-
+  // Box score: a played game brings all ten players from the engine; a simulated
+  // one brings both starting fives from the persistent rosters. Names here are
+  // the same names the scouting report showed.
   const mkRow = (p, cls = '') =>
     `<tr${cls ? ` class="${cls}"` : ''}><td>${p.name}</td><td>${p.min}</td><td>${p.pts}</td><td>${p.ast}</td><td>${p.reb}</td></tr>`;
-
-  const boxScoreHtml =
-    `<table class="box-score">` +
+  const table = (title, rows) =>
+    `<div class="bb-box"><h4>${title}</h4><table class="box-score">` +
       `<thead><tr><th>Spieler</th><th>MIN</th><th>PTS</th><th>AST</th><th>REB</th></tr></thead>` +
-      `<tbody>` +
-        mkRow(humanRow, 'human-row') +
-        teammates.map(t => mkRow(t)).join('') +
-        `<tr style="opacity:.7">${mkRow(oppStar).replace(/^<tr[^>]*>/, '').replace(/<\/tr>$/, '')}</tr>` +
-      `</tbody>` +
-    `</table>`;
+      `<tbody>${rows.map(r => mkRow(r, r.human ? 'human-row' : '')).join('')}</tbody></table></div>`;
+  let boxScoreHtml = '';
+  if (result.box) {
+    const rows = side => result.box[side].map(r => ({ name: `${r.human ? '★ ' : ''}${r.name} (${r.role})`, min: r.min.toFixed(1), pts: r.pts, ast: r.ast, reb: r.reb, human: r.human }));
+    boxScoreHtml = table(teamName, rows('home')) + table(oppName, rows('away'));
+  } else if (result.boxScore) {
+    const humanRow = { name: `★ ${state.player.name}`, min: result.humanMinutes ?? drng.randInt(28, 40), pts: result.personal, ast: result.assists, reb: result.line?.reb ?? drng.randInt(2, 10), human: true };
+    const home = [humanRow, ...result.boxScore.map(r => ({ name: `${r.name} (${r.position})`, min: r.minutesPlayed, pts: r.pts, ast: r.ast, reb: r.reb }))];
+    const away = (result.oppBox || []).map(r => ({ name: `${r.name} (${r.position})`, min: r.minutesPlayed, pts: r.pts, ast: r.ast, reb: r.reb }));
+    boxScoreHtml = table(teamName, home) + (away.length ? table(oppName, away) : '');
+  }
+  const projectedHtml = result.projected
+    ? `<p class="projected-note">Gespielt über ${(48 / result.projected.factor).toFixed(0)} Minuten — für Tabelle und Karriere auf 48 Minuten hochgerechnet (${result.projected.score}, ${result.projected.pts} PTS).</p>`
+    : '';
 
   // Replay hint — last player-type event restated dramatically
   const replayHtml = lastPlayerEventText
@@ -775,9 +759,10 @@ function _basketballMatchScreen(result) {
       </div>
       ${pbpHtml ? `<div class="match-events" style="max-height:340px;overflow-y:auto">${pbpHtml}</div>` : ''}
       ${replayHtml}
+      ${projectedHtml}
       ${boxScoreHtml}
     </div>
-    <button class="btn btn-primary btn-block" onclick="App.showHub()">Weiter →</button>
+    <button class="btn btn-primary btn-block" onclick="App.${result.backTo || 'showHub'}()">Weiter →</button>
   </div>`;
 }
 

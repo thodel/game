@@ -79,6 +79,26 @@ describe('app boots and navigates', () => {
     });
   }
 
+  it('simulates a scheduled basketball fixture onto the broadcast screen', () => {
+    globalThis.document.querySelector = () => ({ dataset: { pos: 'Point Guard' } });
+    App.doNewGame();
+    App.confirmCreate('basketball');
+    App.doPlayMatch();                       // game day for fixture 1
+    expect(root.innerHTML).toContain('SPIEL 1 VON');
+    App.bbSimulate();
+    expect(root.innerHTML).toContain('broadcast-linescore');
+    expect(root.innerHTML).toContain('Q4');
+    expect(root.innerHTML).not.toContain('NaN');
+    // the box score shows the persistent roster, and the back button returns to the schedule
+    expect(root.innerHTML).toContain('box-score');
+    expect(root.innerHTML).toContain('App.bbGameDay()');
+    // doBasketballMatch is the same path now — it must not advance outside the schedule
+    const played = () => JSON.parse(globalThis.localStorage.getItem('sportsCareerGame_v1')).career.nba.games.filter(g => g.done).length;
+    const before = played();
+    App.doBasketballMatch();
+    expect(played()).toBeGreaterThan(before);
+  });
+
   it('resumes from a saved game without throwing', () => {
     globalThis.document.querySelector = () => ({ dataset: { pos: 'Point Guard' } });
     App.confirmCreate('basketball');

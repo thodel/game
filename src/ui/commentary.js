@@ -46,15 +46,18 @@ export function generatePlayByPlay(events, matchResult, state, rng, homeQs, away
   const oppStar   = `${oppFirsts[rng.randInt(0, oppFirsts.length - 1)]} ${oppLasts[rng.randInt(0, oppLasts.length - 1)]}`;
 
   // Quarter scores for running-score display in quarter markers
-  const homeTotal = (matchResult.playerGoals || 0) + 50;
-  const awayTotal = (matchResult.oppGoals    || 0) + 50;
+  const homeTotal = matchResult.playerGoals || 0;
+  const awayTotal = matchResult.oppGoals    || 0;
   const hQs = homeQs || generateQuarterScores(homeTotal, rng);
   const aQs = awayQs || generateQuarterScores(awayTotal, rng);
 
-  // Bucket events into quarters (minute range 5-90 → 4 equal bands of 22.5)
+  // Bucket events into quarters. Game minutes run 0-48 (overtime past 48 lands
+  // in the fourth); anything that is not a number goes to the first quarter
+  // rather than off the end of the array.
   const buckets = [[], [], [], []];
   for (const e of events) {
-    buckets[Math.min(3, Math.floor(e.minute / 22.5))].push(e);
+    const m = Number(e.minute);
+    buckets[Number.isFinite(m) ? Math.min(3, Math.max(0, Math.floor(m / 12))) : 0].push(e);
   }
 
   const lines = [];
@@ -139,9 +142,9 @@ function _classifyEvent(text) {
 }
 
 function _formatQTime(minute, rng) {
-  const qi       = Math.min(3, Math.floor(minute / 22.5));
-  const withinQ  = minute - qi * 22.5;
-  const minsLeft = Math.max(0, Math.floor(12 - (withinQ / 22.5) * 12));
+  const m        = Number.isFinite(Number(minute)) ? Number(minute) : 0;
+  const qi       = Math.min(3, Math.max(0, Math.floor(m / 12)));
+  const minsLeft = Math.max(0, Math.floor(12 - (m - qi * 12)));
   const secs     = rng.randInt(0, 59).toString().padStart(2, '0');
   return { qi, label: `Q${qi + 1} ${minsLeft}:${secs}` };
 }
