@@ -6,6 +6,7 @@
 // This boots the real entry point against a minimal DOM and walks the screens
 // a player actually touches.
 import { describe, it, expect, beforeAll } from 'vitest';
+import { activeSave, allSaves } from '../src/core/persistence.js';
 
 function stubDom() {
   const el = () => ({
@@ -31,6 +32,8 @@ function stubDom() {
     setItem: (k, v) => store.set(k, String(v)),
     removeItem: k => store.delete(k),
     clear: () => store.clear(),
+    key: i => [...store.keys()][i] ?? null,
+    get length() { return store.size; },
   };
   globalThis.requestAnimationFrame = () => 1;
   globalThis.cancelAnimationFrame = () => {};
@@ -93,7 +96,7 @@ describe('app boots and navigates', () => {
     expect(root.innerHTML).toContain('box-score');
     expect(root.innerHTML).toContain('App.bbGameDay()');
     // doBasketballMatch is the same path now — it must not advance outside the schedule
-    const played = () => JSON.parse(globalThis.localStorage.getItem('sportsCareerGame_v1')).career.nba.games.filter(g => g.done).length;
+    const played = () => activeSave().career.nba.games.filter(g => g.done).length;
     const before = played();
     App.doBasketballMatch();
     expect(played()).toBeGreaterThan(before);
@@ -102,7 +105,7 @@ describe('app boots and navigates', () => {
   it('runs a football season through the table, fixtures and contract', () => {
     globalThis.document.querySelector = () => ({ dataset: { pos: 'Stürmer' } });
     App.doNewGame(); App.confirmCreate('football');
-    const save = () => JSON.parse(globalThis.localStorage.getItem('sportsCareerGame_v1'));
+    const save = () => activeSave();
     App.showHub();
     expect(root.innerHTML).toContain('TABELLE');
     expect(root.innerHTML).toContain('NÄCHSTE SPIELE');
@@ -117,6 +120,23 @@ describe('app boots and navigates', () => {
     expect(s.player.age).toBe(18);
     expect(s.career.fb.season).toBe(2);              // a fresh table for the new season
     expect(s.career.fb.fixtures.filter(f => f.played)).toHaveLength(0);
+  });
+
+  it('lists careers on the title, resumes one, and a quick game saves nothing', () => {
+    globalThis.document.querySelector = () => ({ dataset: { pos: 'Point Guard' } });
+    App.doNewGame(); App.confirmCreate('basketball');            // 'Test Spieler'
+    expect(allSaves().length).toBeGreaterThanOrEqual(1);
+    App.doNewGame();
+    expect(root.innerHTML).toContain('GESPEICHERTE KARRIEREN');
+    expect(root.innerHTML).toContain('Test Spieler');
+    App.continueGame('Test Spieler');
+    expect(root.innerHTML).toContain('Test Spieler');
+    const before = allSaves().length;
+    App.startQuickGame('basketball');
+    expect(root.innerHTML).toContain('bb-canvas');                // straight into the live match
+    App.bbAbandon(); App.doNewGame();
+    expect(allSaves().length).toBe(before);
+    App.showQuickGame(); expect(root.innerHTML).toContain('Quick Game');
   });
 
   it('resumes from a saved game without throwing', () => {

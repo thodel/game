@@ -97,6 +97,8 @@ career: {
   afterMatch?(state, { result, myGoals, oppGoals, personal, rng }),  // what a finished live match does to the season
   seasonOutcome?(state) → { promoted, relegated, note },             // let a table decide instead of the win rate
   hudExtras?(state) → html,                                          // extra HUD blocks (injury, suspension)
+  quickMatch?(state, App),                                           // Quick Game: straight into one match, nothing saved
+  forfeitMatch?(state, App),                                         // giving up a match: a loss wherever it would have counted
 }
 ```
 
