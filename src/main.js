@@ -4,13 +4,11 @@ import { newState }             from './core/state.js';
 import { saveGame, loadGame, clearSave, exportSave, importSave } from './core/persistence.js';
 import { avgStat, clamp, fmt }  from './core/utils.js';
 import { adapters, getAdapter } from './sports/adapters.js';
-import { getLeagueLeaders }    from './sports/basketball/index.js';
 import { footballAdapter }   from './sports/football/index.js';
 import { basketballAdapter } from './sports/basketball/index.js';
 import * as bb                from './sports/basketball/career.js';
 import { render, renderStats, renderSeasonBar, statColor } from './ui/dom.js';
 import { addLog }               from './ui/log.js';
-import { generatePlayByPlay, generateQuarterScores } from './ui/commentary.js';
 
 let state = null;
 let liveMatch = null;
@@ -42,17 +40,7 @@ const App = {
   // ── Actions ─────────────────────────────────────────
   doPlayMatch() {
     if (!state) return;
-    const adapter = getAdapter(state.sport);
-    if (state.sport === 'football') {
-      App.showFootballMatch();
-    } else if (state.sport === 'basketball') {
-      // The season owns the fixture list; the game-day screen offers playing it
-      // live, simulating it, or scouting the opponent first.
-      bb.ensureSeason(state, basketballAdapter.teamsByLeague);
-      const season = state.career.nba;
-      if (season.playoffs && season.playoffs.stage !== 'done') bb.showPlayoffs(state, App);
-      else bb.showGameDay(state, App);
-    }
+    getAdapter(state.sport).career.playMatch(state, App);
   },
 
   // ── Basketball season ──────────────────────────────
@@ -70,70 +58,35 @@ const App = {
   bbNextSeason()  { bb.startNextSeason(state, App, basketballAdapter.teamsByLeague); },
 
   // Scouting report for the next scheduled opponent (Epic #52)
-  bbScout() {
-    if (!state) return;
-    const adapter = getAdapter('basketball');
-    const info = bb.nextGameInfo(state);
-    if (!info || !adapter.getScoutingInfo) return App.bbGameDay();
-    const oppTeamData = state.league?.teams?.[info.opponent.name];
-    if (!oppTeamData?.roster) return App.bbGameDay();
-    render(_basketballScoutScreen({ opponent: info.opponent.name }, adapter.getScoutingInfo(oppTeamData.roster)));
-  },
+  bbScout()       { bb.showScout(state, App); },
 
-  // The schedule owns every basketball game: this simulates the next fixture.
   doBasketballMatch() { App.bbSimulate(); },
 
   doTraining(stat) {
     const p = state.player, c = state.career;
     if (p.energy < 20) return;
-    // A basketball season runs on a calendar: training spends an off day, and on
-    // a game day there is none to spend.
-    if (state.sport === 'basketball' && !bb.spendRestDay(state, basketballAdapter.teamsByLeague)) {
-      addLog(state, 'Spieltag — heute wird gespielt, nicht trainiert.', 'neutral');
-      saveGame(state);
-      return App.bbGameDay();
-    }
+    // Every action spends time; the sport decides what a unit of time is
+    if (!getAdapter(state.sport).career.spendDay(state, App, 'trainiert')) return;
     const gain = state._rng.randInt(2, 6);
     p.stats[stat] = clamp(p.stats[stat] + gain, 1, 99);
     p.energy = clamp(p.energy - state._rng.randInt(10, 20), 0, 100);
     p.money -= 50;
-    if (state.sport !== 'basketball') { c.week++; if (c.week > c.weeksPerSeason) { App.endSeason(); } }
     addLog(state, `Training: ${stat} +${gain}`, 'good');
     saveGame(state); App.showHub();
   },
 
   doRest() {
     const p = state.player, c = state.career;
-    if (state.sport === 'basketball' && !bb.spendRestDay(state, basketballAdapter.teamsByLeague)) {
-      addLog(state, 'Spieltag — heute wird gespielt, nicht ausgeruht.', 'neutral');
-      saveGame(state);
-      return App.bbGameDay();
-    }
+    if (!getAdapter(state.sport).career.spendDay(state, App, 'ausgeruht')) return;
     p.energy = clamp(p.energy + state._rng.randInt(25, 45), 0, 100);
     p.morale = clamp(p.morale + state._rng.randInt(5, 15), 0, 100);
-    if (state.sport !== 'basketball') { c.week++; if (c.week > c.weeksPerSeason) { App.endSeason(); } }
     addLog(state, `Erholt. Energie +${25}, Moral +${10}`, 'neutral');
     saveGame(state); App.showHub();
   },
 
   doSimSeason() {
     if (!state) return;
-    // Basketball has a schedule; the season runs the rest of it through the same game model
-    if (state.sport === 'basketball') return App.bbSimSeason();
-    const adapter = getAdapter(state.sport);
-    const results = [];
-    const c = state.career;
-    const startWeek = c.week;
-    for (let w = startWeek; w <= c.weeksPerSeason; w++) {
-      const matchCtx = adapter.createMatch(state);
-      const rng = createRNG(matchCtx.seed);
-      const r = adapter.simulateHeadless(state, { rng, ...matchCtx });
-      results.push(r);
-    }
-    results.forEach(r => {
-      addLog(state, `${r.opponent}: ${r.score}`, r.result === 'win' ? 'good' : r.result === 'loss' ? 'bad' : 'neutral');
-    });
-    saveGame(state); App.showHub();
+    getAdapter(state.sport).career.simSeason(state, App);
   },
 
   doNewGame() { state = null; clearSave(); App.showTitle(); },
@@ -152,7 +105,6 @@ const App = {
     const total = c.wins + c.losses + c.draws;
     const winRate = total > 0 ? c.wins / total : 0;
     const adapter = getAdapter(state.sport);
-    const isFootball = state.sport === 'football';
     const PROMOTION = 0.55, RELEGATION = 0.30;
     let promoted = false, relegated = false;
     if (winRate >= PROMOTION && c.leagueIndex < adapter.leagues.length - 1) {
@@ -161,19 +113,19 @@ const App = {
       c.leagueIndex--; c.relegations++; relegated = true;
     }
     if (promoted) {
-      const teams = isFootball ? footballAdapter.teamNames : basketballAdapter.teamsByLeague[c.leagueIndex];
+      const teams = adapter.teamPool(c.leagueIndex);
       c.teamName = teams[Math.floor(state._rng.next() * teams.length)];
       addLog(state, `Aufstieg in die ${adapter.leagues[c.leagueIndex]}! 🎉`, 'good');
     } else if (relegated) {
-      const teams = isFootball ? footballAdapter.teamNames : basketballAdapter.teamsByLeague[c.leagueIndex];
+      const teams = adapter.teamPool(c.leagueIndex);
       c.teamName = teams[Math.floor(state._rng.next() * teams.length)];
       addLog(state, `Abstieg in die ${adapter.leagues[c.leagueIndex]} 😤`, 'bad');
     }
     c.season++; c.week = 1; c.wins = 0; c.losses = 0; c.draws = 0;
-    const bonus = isFootball ? state._rng.randInt(2000, 8000) * (c.leagueIndex + 1) : c.leagueIndex === 1 ? state._rng.randInt(1500000, 5000000) : state._rng.randInt(50000, 150000);
+    const bonus = adapter.seasonBonus ? adapter.seasonBonus(state) : state._rng.randInt(2000, 8000) * (c.leagueIndex + 1);
     p.money += bonus; p.totalEarned += bonus;
     // Re-init league rosters for the new season (basketball only) (Epic #51)
-    if (!isFootball && adapter.initLeagueRoster) {
+    if (adapter.initLeagueRoster) {
       state.league = { teams: {}, season: c.season };
       adapter.initLeagueRoster(state, state._rng);
     }
@@ -532,7 +484,7 @@ function _hubScreen() {
       ${renderStats(p)}
     </div>
     ${actions}
-    ${state.sport === 'basketball' ? _basketballLeagueSection() : ''}
+    ${getAdapter(state.sport).career.hubSection(state)}
     <div class="card">
       <div style="font-size:.8rem;color:var(--muted);margin-bottom:8px">LETZTE ERGEBNISSE</div>
       <div class="log">${logHtml || '<div style="color:var(--muted);font-size:.85rem">Noch keine Spiele gespielt.</div>'}</div>
@@ -541,63 +493,17 @@ function _hubScreen() {
   </div>`;
 }
 
-// ── Basketball-only: Liga leaderboard (Epic #51) ─────────────────────────────
-function _basketballLeagueSection() {
-  if (!state.league || !Object.keys(state.league.teams).length) return '';
-  const { scorers, assisters } = getLeagueLeaders(state);
-  const row = pl => `<div style="display:flex;justify-content:space-between;font-size:.82rem;padding:2px 0">
-    <span>${pl.name} <span style="color:var(--muted);font-size:.75rem">(${pl.team})</span></span>
-    <strong>${pl.stats.pts} Pts</strong>
-  </div>`;
-  const rowAst = pl => `<div style="display:flex;justify-content:space-between;font-size:.82rem;padding:2px 0">
-    <span>${pl.name} <span style="color:var(--muted);font-size:.75rem">(${pl.team})</span></span>
-    <strong>${pl.stats.ast} Ast</strong>
-  </div>`;
-  return `<div class="card">
-    <div style="font-size:.8rem;color:var(--muted);margin-bottom:8px">🏆 LIGA — TOP SCORER</div>
-    ${scorers.length ? scorers.map(row).join('') : '<div style="color:var(--muted);font-size:.85rem">Noch keine Saison-Daten.</div>'}
-    <div style="font-size:.8rem;color:var(--muted);margin:10px 0 6px">🎯 TOP ASSISTGEBER</div>
-    ${assisters.length ? assisters.map(rowAst).join('') : ''}
-  </div>`;
-}
 
-// ── Basketball: scouting screen (Epic #52) ───────────────────────────────────
-function _basketballScoutScreen(matchCtx, scouting) {
-  const c = state.career;
-  const cfg = getAdapter(state.sport);
-  const starterRows = (scouting.starters || []).map(pl =>
-    `<div style="display:flex;justify-content:space-between;font-size:.82rem;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.06)">
-      <span><strong>${pl.position}</strong> ${pl.name}</span>
-      <span style="color:var(--muted)">${pl.tendency?.archetype || ''} · ${pl.rating} RTG</span>
-    </div>`).join('');
-  return `<div class="screen match-screen">
-    <div class="card">
-      <div style="color:var(--muted);font-size:.8rem;margin-bottom:8px">${cfg.icon} ${cfg.name} — Scouting Report</div>
-      <div style="font-size:1.1rem;font-weight:bold;margin-bottom:12px">${c.teamName} <span style="color:var(--muted)">vs</span> ${matchCtx.opponent}</div>
-      <div style="background:rgba(255,255,255,.05);border-radius:8px;padding:10px;margin-bottom:12px">
-        <div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">GEGNER-ANALYSE</div>
-        <div style="font-size:.95rem">Stärken: <strong>${scouting.strength}</strong></div>
-        <div style="font-size:.9rem;margin-top:4px;color:var(--muted)">Schlüsselspieler: ${scouting.keeper}</div>
-      </div>
-      <div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">STARTAUFSTELLUNG GEGNER</div>
-      ${starterRows}
-    </div>
-    <button class="btn btn-primary btn-block" onclick="App.bbPlay()">Spielen 🏀</button>
-    <button class="btn btn-ghost btn-block" onclick="App.bbGameDay()">← Spieltag</button>
-    <button class="btn btn-ghost btn-block" onclick="App.showHub()">← Zurück</button>
-  </div>`;
-}
 
 function _actionsScreen() {
   const p = state.player, c = state.career, cfg = getAdapter(state.sport);
-  const isFootball = state.sport === 'football';
-  const matchLabel = isFootball ? 'Spiel starten' : 'Match simulieren';
-  const matchIcon  = isFootball ? '⚽' : '🏀';
+  const card = cfg.actionCard || { label: 'Spiel starten', icon: cfg.icon, desc: '' };
+  const matchLabel = card.label, matchIcon = card.icon;
   return `<div class="actions-grid">
     <div class="action-card" onclick="App.doPlayMatch()">
       <span class="action-icon">${matchIcon}</span>
       <div class="action-name">${matchLabel}</div>
-      <div class="action-desc">${isFootball ? '11 vs 11 im Stadion' : 'Spielergebnis berechnen'}</div>
+      <div class="action-desc">${card.desc}</div>
       <div class="action-cost">Energie -20–30</div>
     </div>
     <div class="action-card ${p.energy < 20 ? 'disabled' : ''}" onclick="App.doTraining(prompt('Stat (${cfg.stats.join(', ')})?'))">
@@ -628,10 +534,10 @@ function _actionsScreen() {
 }
 
 function _matchScreen(result) {
-  if (state.sport === 'basketball') return _basketballMatchScreen(result);
-  // ── Football (and any future non-basketball sport) — UNCHANGED ──────────
   const cfg = getAdapter(state.sport);
-  const isFootball = state.sport === 'football';
+  // A sport may bring its own result screen (basketball's broadcast view)
+  const own = cfg.career.matchScreen(state, result);
+  if (own) return own;
   const eventsHtml = result.events.map(e => `<div class="match-event ${e.type}">${result.box ? e.minute : e.minute + "'"} — ${e.text}</div>`).join('');
 
   const boxTable = (title, rows) => `
@@ -676,95 +582,6 @@ function _matchScreen(result) {
   </div>`;
 }
 
-// ── Basketball broadcast match screen ──────────────────────────────────────
-function _basketballMatchScreen(result) {
-  const cfg      = getAdapter(state.sport);
-  const teamName = state.career.teamName;
-  const oppName  = result.opponent;
-  const homeTotal = result.playerGoals ?? Number(String(result.score).split(':')[0]) ?? 0;
-  const awayTotal = result.oppGoals    ?? Number(String(result.score).split(':')[1]) ?? 0;
-
-  // Deterministic display RNG (does NOT advance the game-state RNG)
-  const dSeed = ((result.playerGoals || 0) * 2654435761 + (result.oppGoals || 0) * 1013904223 + ((result.money || 0) & 0xffff)) >>> 0;
-  const drng  = createRNG(dSeed || 42);
-
-  // Quarter scores — generated ONCE and shared with play-by-play so markers are consistent
-  // Real quarter scores when the game produced them (simulated or played live);
-  // a generated split only for results that carry none.
-  const homeQs = result.quarters?.home?.length === 4 ? result.quarters.home : generateQuarterScores(homeTotal, drng);
-  const awayQs = result.quarters?.away?.length === 4 ? result.quarters.away : generateQuarterScores(awayTotal, drng);
-
-  // Play-by-play commentary
-  const { html: pbpHtml, lastPlayerEventText } = generatePlayByPlay(result.events, result, state, drng, homeQs, awayQs);
-
-  // Linescore abbreviations (last word of team name, 3 chars)
-  const homeAbbr = teamName.split(' ').pop().slice(0, 3).toUpperCase();
-  const awayAbbr = oppName.split(' ').pop().slice(0, 3).toUpperCase();
-  const leagueName = cfg.leagues[state.career.leagueIndex] || cfg.name;
-
-  const linescoreHtml =
-    `<div class="broadcast-linescore">` +
-      `<div class="team-col"></div>` +
-      `<div class="q-col">Q1</div><div class="q-col">Q2</div><div class="q-col">Q3</div><div class="q-col">Q4</div>` +
-      `<div class="total-col">TOT</div>` +
-      `<div class="team-col">◼ ${homeAbbr}</div>` +
-      homeQs.map(s => `<div class="q-col">${s}</div>`).join('') +
-      `<div class="total-col">${homeTotal}</div>` +
-      `<div class="team-col">◼ ${awayAbbr}</div>` +
-      awayQs.map(s => `<div class="q-col">${s}</div>`).join('') +
-      `<div class="total-col">${awayTotal}</div>` +
-    `</div>` +
-    `<div style="margin-top:6px;font-size:.75rem;color:var(--muted)">${teamName} vs. ${oppName} · ${leagueName}</div>`;
-
-  // Result banner
-  const bannerClass = result.result === 'win' ? 'win' : result.result === 'loss' ? 'loss' : 'draw';
-  const bannerText  = result.result === 'win'  ? `🏆 SIEG! +€${fmt(result.money)}`
-                    : result.result === 'loss' ? '😤 NIEDERLAGE'
-                    : `🤝 UNENTSCHIEDEN +€${fmt(result.money)}`;
-
-  // Box score: a played game brings all ten players from the engine; a simulated
-  // one brings both starting fives from the persistent rosters. Names here are
-  // the same names the scouting report showed.
-  const mkRow = (p, cls = '') =>
-    `<tr${cls ? ` class="${cls}"` : ''}><td>${p.name}</td><td>${p.min}</td><td>${p.pts}</td><td>${p.ast}</td><td>${p.reb}</td></tr>`;
-  const table = (title, rows) =>
-    `<div class="bb-box"><h4>${title}</h4><table class="box-score">` +
-      `<thead><tr><th>Spieler</th><th>MIN</th><th>PTS</th><th>AST</th><th>REB</th></tr></thead>` +
-      `<tbody>${rows.map(r => mkRow(r, r.human ? 'human-row' : '')).join('')}</tbody></table></div>`;
-  let boxScoreHtml = '';
-  if (result.box) {
-    const rows = side => result.box[side].map(r => ({ name: `${r.human ? '★ ' : ''}${r.name} (${r.role})`, min: r.min.toFixed(1), pts: r.pts, ast: r.ast, reb: r.reb, human: r.human }));
-    boxScoreHtml = table(teamName, rows('home')) + table(oppName, rows('away'));
-  } else if (result.boxScore) {
-    const humanRow = { name: `★ ${state.player.name}`, min: result.humanMinutes ?? drng.randInt(28, 40), pts: result.personal, ast: result.assists, reb: result.line?.reb ?? drng.randInt(2, 10), human: true };
-    const home = [humanRow, ...result.boxScore.map(r => ({ name: `${r.name} (${r.position})`, min: r.minutesPlayed, pts: r.pts, ast: r.ast, reb: r.reb }))];
-    const away = (result.oppBox || []).map(r => ({ name: `${r.name} (${r.position})`, min: r.minutesPlayed, pts: r.pts, ast: r.ast, reb: r.reb }));
-    boxScoreHtml = table(teamName, home) + (away.length ? table(oppName, away) : '');
-  }
-  const projectedHtml = result.projected
-    ? `<p class="projected-note">Gespielt über ${(48 / result.projected.factor).toFixed(0)} Minuten — für Tabelle und Karriere auf 48 Minuten hochgerechnet (${result.projected.score}, ${result.projected.pts} PTS).</p>`
-    : '';
-
-  // Replay hint — last player-type event restated dramatically
-  const replayHtml = lastPlayerEventText
-    ? `<div style="margin:10px 0;color:var(--muted);font-size:.83rem;font-style:italic">🎬 Replay: ${lastPlayerEventText}</div>`
-    : '';
-
-  return `<div class="screen match-screen">
-    <div class="card">
-      <div class="broadcast-header">${linescoreHtml}</div>
-      <div class="result-banner ${bannerClass}">
-        <div style="font-size:1.6rem;font-weight:900">${bannerText}</div>
-        <div style="font-size:.85rem;color:var(--muted);margin-top:4px">Pers. ${result.personal} Punkte · ${result.assists} Assists</div>
-      </div>
-      ${pbpHtml ? `<div class="match-events" style="max-height:340px;overflow-y:auto">${pbpHtml}</div>` : ''}
-      ${replayHtml}
-      ${projectedHtml}
-      ${boxScoreHtml}
-    </div>
-    <button class="btn btn-primary btn-block" onclick="App.${result.backTo || 'showHub'}()">Weiter →</button>
-  </div>`;
-}
 
 function _footballIntroScreen(s, opponent) {
   return `<div class="screen stadium-screen">

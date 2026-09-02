@@ -1,6 +1,5 @@
 // ── Football adapter ──────────────────────────────────
 import { clamp, avgStat, pickExcluding } from '../../core/utils.js';
-import { endSeason }                     from '../../core/season.js';
 import { checkAchievements, showAchievement } from '../../core/achievements.js';
 import { matchSeed }                     from '../../core/rng.js';
 import { addLog }                        from '../../ui/log.js'; // UI-side effect
@@ -31,6 +30,13 @@ export const footballAdapter = {
   matchEvents: MATCH_EVENTS,
   teamNames: TEAM_NAMES,
   scoreLabel: 'Tore',
+  // Where a career begins: stat range, age, fame, money, skill points
+  starting: { statRange: [20, 40], age: [17, 17], fame: [0, 0], money: [500, 500], skillPoints: 3 },
+  teamPool(leagueIndex) { return TEAM_NAMES; },
+  actionCard: { label: 'Spiel starten', icon: '⚽', desc: '11 vs 11 im Stadion' },
+  achievements: [
+    { id: 'legend', name: 'Legende', desc: 'Top-Liga erreicht', icon: '👑', check: s => s.career.leagueIndex >= 5 },
+  ],
   boxScoreFields: [
     { key: 'goals',     label: 'Tore' },
     { key: 'assists',   label: 'Vorlagen' },
@@ -103,12 +109,11 @@ export const footballAdapter = {
                    : p.morale;
     p.fame        += result === 'win' ? rng.randInt(3, 8) : rng.randInt(0, 2);
 
+    // The week advances here; the season rollover belongs to App.endSeason(),
+    // which owns the season number, the bonus and the new club. Two rollovers
+    // (this one used to call core/season.js's weaker endSeason) meant the season
+    // counter never moved when a season was simulated.
     c.week++;
-    if (c.week > c.weeksPerSeason) {
-      const { promoted, relegated } = endSeason(c, cfg.leagues.length);
-      if (promoted) addLog(state, 'Aufstieg! 🎉', 'good');
-      else if (relegated) addLog(state, 'Abstieg… 😞', 'bad');
-    }
 
     const newAchs = checkAchievements(state);
     newAchs.forEach(showAchievement);

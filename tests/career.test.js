@@ -161,13 +161,13 @@ describe('checkAchievements', () => {
 
   it('fires legend for football at Bundesliga (index 5)', () => {
     const s = makeState({ sport: 'football', career: { leagueIndex: 5, wins: 1 } });
-    const unlocked = checkAchievements(s);
+    const unlocked = checkAchievements(s, footballAdapter.achievements);
     expect(unlocked.map(a => a.id)).toContain('legend');
   });
 
   it('fires legend for basketball at NBA (index 1)', () => {
     const s = makeState({ sport: 'basketball', career: { leagueIndex: 1, wins: 1 } });
-    const unlocked = checkAchievements(s);
+    const unlocked = checkAchievements(s, basketballAdapter.achievements);
     expect(unlocked.map(a => a.id)).toContain('legend');
   });
 
@@ -221,11 +221,12 @@ describe('SportAdapter', () => {
     expect(['win','draw','loss']).toContain(result.result);
   });
 
-  it('no sport=== checks outside src/sports/', () => {
-    // This is enforced by the grep check below in the verification step
-    // Here we just verify both adapters pass
-    expect(footballAdapter.id).toBe('football');
-    expect(basketballAdapter.id).toBe('basketball');
+  it('no sport=== checks outside src/sports/', async () => {
+    const { readFileSync, readdirSync, statSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const walk = d => readdirSync(d).flatMap(f => { const p = join(d, f); return statSync(p).isDirectory() ? walk(p) : [p]; });
+    const offenders = walk('src').filter(f => f.endsWith('.js') && !f.startsWith('src/sports') && /sport\s*===/.test(readFileSync(f, 'utf8')));
+    expect(offenders).toEqual([]);
   });
 });
 

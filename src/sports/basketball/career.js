@@ -8,7 +8,8 @@ import { clamp, avgStat, fmt } from '../../core/utils.js';
 import { checkAchievements, showAchievement } from '../../core/achievements.js';
 import { SeasonEngine }      from './season.js';
 import { BasketballEngine }  from './engine.js';
-import { basketballAdapter } from './index.js';
+import { basketballAdapter, getLeagueLeaders } from './index.js';
+import { generatePlayByPlay, generateQuarterScores } from '../../ui/commentary.js';
 import { createRNG, matchSeed } from '../../core/rng.js';
 
 const WEEKLY_SKILL_POINTS = 1;
@@ -353,7 +354,7 @@ function finishMatch(state, App, res) {
   }
 
   saveGame(state);
-  checkAchievements(state).forEach(showAchievement);
+  checkAchievements(state, basketballAdapter.achievements).forEach(showAchievement);
   saveGame(state);
   App.showMatch({
     result: myScore > oppScore ? 'win' : 'loss',
@@ -432,8 +433,9 @@ export function simulateNextGame(state, App) {
     restDays: info.restDays, seedKey: info.fixture.day * 10 + (info.isHome ? 1 : 0),
   });
   recordFixture(state, info.fixture, r.myScore, r.oppScore);
+  // Check before saving: an achievement earned on this fixture must be in the save
+  checkAchievements(state, basketballAdapter.achievements).forEach(showAchievement);
   saveGame(state);
-  checkAchievements(state).forEach(showAchievement);
   App.showMatch(broadcastResult(state, r, info.opponent.name, 'bbGameDay'));
 }
 
@@ -448,6 +450,7 @@ export function simulateSeason(state, App) {
     });
     recordFixture(state, info.fixture, r.myScore, r.oppScore);
   }
+  checkAchievements(state, basketballAdapter.achievements).forEach(showAchievement);
   saveGame(state);
   showPlayoffs(state, App);
 }
@@ -521,6 +524,7 @@ export function simulatePlayoffGame(state, App) {
     seedKey: 9000 + (pending.series ? season.playoffs.series.indexOf(pending.series) * 10 : 0) + gameNo,
   });
   SeasonEngine.recordPlayerPlayoffGame(season, pending, isHome ? r.myScore : r.oppScore, isHome ? r.oppScore : r.myScore);
+  checkAchievements(state, basketballAdapter.achievements).forEach(showAchievement);
   saveGame(state);
   App.showMatch(broadcastResult(state, r, season.teams[oppId].name, 'bbPlayoffs'));
 }
@@ -558,3 +562,168 @@ export function startNextSeason(state, App, teamsByLeague) {
   saveGame(state);
   App.showHub();
 }
+
+// ── Screens that belong to basketball, not to the app shell ──
+export function hubSection(state) {
+  if (!state.league || !Object.keys(state.league.teams).length) return '';
+  const { scorers, assisters } = getLeagueLeaders(state);
+  const row = pl => `<div style="display:flex;justify-content:space-between;font-size:.82rem;padding:2px 0">
+    <span>${pl.name} <span style="color:var(--muted);font-size:.75rem">(${pl.team})</span></span>
+    <strong>${pl.stats.pts} Pts</strong>
+  </div>`;
+  const rowAst = pl => `<div style="display:flex;justify-content:space-between;font-size:.82rem;padding:2px 0">
+    <span>${pl.name} <span style="color:var(--muted);font-size:.75rem">(${pl.team})</span></span>
+    <strong>${pl.stats.ast} Ast</strong>
+  </div>`;
+  return `<div class="card">
+    <div style="font-size:.8rem;color:var(--muted);margin-bottom:8px">🏆 LIGA — TOP SCORER</div>
+    ${scorers.length ? scorers.map(row).join('') : '<div style="color:var(--muted);font-size:.85rem">Noch keine Saison-Daten.</div>'}
+    <div style="font-size:.8rem;color:var(--muted);margin:10px 0 6px">🎯 TOP ASSISTGEBER</div>
+    ${assisters.length ? assisters.map(rowAst).join('') : ''}
+  </div>`;
+}
+
+export function scoutScreen(state, matchCtx, scouting) {
+  const c = state.career;
+  const cfg = basketballAdapter;
+  const starterRows = (scouting.starters || []).map(pl =>
+    `<div style="display:flex;justify-content:space-between;font-size:.82rem;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.06)">
+      <span><strong>${pl.position}</strong> ${pl.name}</span>
+      <span style="color:var(--muted)">${pl.tendency?.archetype || ''} · ${pl.rating} RTG</span>
+    </div>`).join('');
+  return `<div class="screen match-screen">
+    <div class="card">
+      <div style="color:var(--muted);font-size:.8rem;margin-bottom:8px">${cfg.icon} ${cfg.name} — Scouting Report</div>
+      <div style="font-size:1.1rem;font-weight:bold;margin-bottom:12px">${c.teamName} <span style="color:var(--muted)">vs</span> ${matchCtx.opponent}</div>
+      <div style="background:rgba(255,255,255,.05);border-radius:8px;padding:10px;margin-bottom:12px">
+        <div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">GEGNER-ANALYSE</div>
+        <div style="font-size:.95rem">Stärken: <strong>${scouting.strength}</strong></div>
+        <div style="font-size:.9rem;margin-top:4px;color:var(--muted)">Schlüsselspieler: ${scouting.keeper}</div>
+      </div>
+      <div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">STARTAUFSTELLUNG GEGNER</div>
+      ${starterRows}
+    </div>
+    <button class="btn btn-primary btn-block" onclick="App.bbPlay()">Spielen 🏀</button>
+    <button class="btn btn-ghost btn-block" onclick="App.bbGameDay()">← Spieltag</button>
+    <button class="btn btn-ghost btn-block" onclick="App.showHub()">← Zurück</button>
+  </div>`;
+}
+
+export function matchScreen(state, result) {
+  const cfg      = basketballAdapter;
+  const teamName = state.career.teamName;
+  const oppName  = result.opponent;
+  const homeTotal = result.playerGoals ?? Number(String(result.score).split(':')[0]) ?? 0;
+  const awayTotal = result.oppGoals    ?? Number(String(result.score).split(':')[1]) ?? 0;
+
+  // Deterministic display RNG (does NOT advance the game-state RNG)
+  const dSeed = ((result.playerGoals || 0) * 2654435761 + (result.oppGoals || 0) * 1013904223 + ((result.money || 0) & 0xffff)) >>> 0;
+  const drng  = createRNG(dSeed || 42);
+
+  // Quarter scores — generated ONCE and shared with play-by-play so markers are consistent
+  // Real quarter scores when the game produced them (simulated or played live);
+  // a generated split only for results that carry none.
+  const homeQs = result.quarters?.home?.length === 4 ? result.quarters.home : generateQuarterScores(homeTotal, drng);
+  const awayQs = result.quarters?.away?.length === 4 ? result.quarters.away : generateQuarterScores(awayTotal, drng);
+
+  // Play-by-play commentary
+  const { html: pbpHtml, lastPlayerEventText } = generatePlayByPlay(result.events, result, state, drng, homeQs, awayQs);
+
+  // Linescore abbreviations (last word of team name, 3 chars)
+  const homeAbbr = teamName.split(' ').pop().slice(0, 3).toUpperCase();
+  const awayAbbr = oppName.split(' ').pop().slice(0, 3).toUpperCase();
+  const leagueName = cfg.leagues[state.career.leagueIndex] || cfg.name;
+
+  const linescoreHtml =
+    `<div class="broadcast-linescore">` +
+      `<div class="team-col"></div>` +
+      `<div class="q-col">Q1</div><div class="q-col">Q2</div><div class="q-col">Q3</div><div class="q-col">Q4</div>` +
+      `<div class="total-col">TOT</div>` +
+      `<div class="team-col">◼ ${homeAbbr}</div>` +
+      homeQs.map(s => `<div class="q-col">${s}</div>`).join('') +
+      `<div class="total-col">${homeTotal}</div>` +
+      `<div class="team-col">◼ ${awayAbbr}</div>` +
+      awayQs.map(s => `<div class="q-col">${s}</div>`).join('') +
+      `<div class="total-col">${awayTotal}</div>` +
+    `</div>` +
+    `<div style="margin-top:6px;font-size:.75rem;color:var(--muted)">${teamName} vs. ${oppName} · ${leagueName}</div>`;
+
+  // Result banner
+  const bannerClass = result.result === 'win' ? 'win' : result.result === 'loss' ? 'loss' : 'draw';
+  const bannerText  = result.result === 'win'  ? `🏆 SIEG! +€${fmt(result.money)}`
+                    : result.result === 'loss' ? '😤 NIEDERLAGE'
+                    : `🤝 UNENTSCHIEDEN +€${fmt(result.money)}`;
+
+  // Box score: a played game brings all ten players from the engine; a simulated
+  // one brings both starting fives from the persistent rosters. Names here are
+  // the same names the scouting report showed.
+  const mkRow = (p, cls = '') =>
+    `<tr${cls ? ` class="${cls}"` : ''}><td>${p.name}</td><td>${p.min}</td><td>${p.pts}</td><td>${p.ast}</td><td>${p.reb}</td></tr>`;
+  const table = (title, rows) =>
+    `<div class="bb-box"><h4>${title}</h4><table class="box-score">` +
+      `<thead><tr><th>Spieler</th><th>MIN</th><th>PTS</th><th>AST</th><th>REB</th></tr></thead>` +
+      `<tbody>${rows.map(r => mkRow(r, r.human ? 'human-row' : '')).join('')}</tbody></table></div>`;
+  let boxScoreHtml = '';
+  if (result.box) {
+    const rows = side => result.box[side].map(r => ({ name: `${r.human ? '★ ' : ''}${r.name} (${r.role})`, min: r.min.toFixed(1), pts: r.pts, ast: r.ast, reb: r.reb, human: r.human }));
+    boxScoreHtml = table(teamName, rows('home')) + table(oppName, rows('away'));
+  } else if (result.boxScore) {
+    const humanRow = { name: `★ ${state.player.name}`, min: result.humanMinutes ?? drng.randInt(28, 40), pts: result.personal, ast: result.assists, reb: result.line?.reb ?? drng.randInt(2, 10), human: true };
+    const home = [humanRow, ...result.boxScore.map(r => ({ name: `${r.name} (${r.position})`, min: r.minutesPlayed, pts: r.pts, ast: r.ast, reb: r.reb }))];
+    const away = (result.oppBox || []).map(r => ({ name: `${r.name} (${r.position})`, min: r.minutesPlayed, pts: r.pts, ast: r.ast, reb: r.reb }));
+    boxScoreHtml = table(teamName, home) + (away.length ? table(oppName, away) : '');
+  }
+  const projectedHtml = result.projected
+    ? `<p class="projected-note">Gespielt über ${(48 / result.projected.factor).toFixed(0)} Minuten — für Tabelle und Karriere auf 48 Minuten hochgerechnet (${result.projected.score}, ${result.projected.pts} PTS).</p>`
+    : '';
+
+  // Replay hint — last player-type event restated dramatically
+  const replayHtml = lastPlayerEventText
+    ? `<div style="margin:10px 0;color:var(--muted);font-size:.83rem;font-style:italic">🎬 Replay: ${lastPlayerEventText}</div>`
+    : '';
+
+  return `<div class="screen match-screen">
+    <div class="card">
+      <div class="broadcast-header">${linescoreHtml}</div>
+      <div class="result-banner ${bannerClass}">
+        <div style="font-size:1.6rem;font-weight:900">${bannerText}</div>
+        <div style="font-size:.85rem;color:var(--muted);margin-top:4px">Pers. ${result.personal} Punkte · ${result.assists} Assists</div>
+      </div>
+      ${pbpHtml ? `<div class="match-events" style="max-height:340px;overflow-y:auto">${pbpHtml}</div>` : ''}
+      ${replayHtml}
+      ${projectedHtml}
+      ${boxScoreHtml}
+    </div>
+    <button class="btn btn-primary btn-block" onclick="App.${result.backTo || 'showHub'}()">Weiter →</button>
+  </div>`;
+}
+
+export function showScout(state, App) {
+  const info = nextGameInfo(state);
+  if (!info || !basketballAdapter.getScoutingInfo) return showGameDay(state, App);
+  const oppTeamData = state.league?.teams?.[info.opponent.name];
+  if (!oppTeamData?.roster) return showGameDay(state, App);
+  render(scoutScreen(state, { opponent: info.opponent.name }, basketballAdapter.getScoutingInfo(oppTeamData.roster)));
+}
+
+// ── Career hooks: what the app shell calls instead of asking which sport it is ──
+export const careerHooks = {
+  playMatch(state, App) {
+    ensureSeason(state, basketballAdapter.teamsByLeague);
+    const season = state.career.nba;
+    if (season.playoffs && season.playoffs.stage !== 'done') showPlayoffs(state, App);
+    else showGameDay(state, App);
+  },
+  // A basketball season runs on a calendar: an off day is spent, and on a game
+  // day there is none to spend. Returns false when the action must not happen.
+  spendDay(state, App, verb) {
+    if (spendRestDay(state, basketballAdapter.teamsByLeague)) return true;
+    addLog(state, `Spieltag — heute wird gespielt, nicht ${verb}.`, 'neutral');
+    saveGame(state);
+    showGameDay(state, App);
+    return false;
+  },
+  simSeason(state, App) { simulateSeason(state, App); },
+  hubSection,
+  matchScreen,
+};
