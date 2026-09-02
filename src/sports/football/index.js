@@ -2,7 +2,8 @@
 import { clamp, avgStat, pickExcluding } from '../../core/utils.js';
 import { checkAchievements, showAchievement } from '../../core/achievements.js';
 import { matchSeed }                     from '../../core/rng.js';
-import { addLog }                        from '../../ui/log.js'; // UI-side effect
+import { addLog }                        from '../../ui/log.js';
+import { positionRating, trainingBonus, fixtureForWeek } from './season.js'; // UI-side effect
 
 const MATCH_EVENTS = {
   player:   ['Tor! ⚽', 'Traumpass 🎯', 'Elfer verwandelt 💥', 'Flanke zum Tor 🎪', 'Freistoss ✨'],
@@ -34,6 +35,7 @@ export const footballAdapter = {
   starting: { statRange: [20, 40], age: [17, 17], fame: [0, 0], money: [500, 500], skillPoints: 3 },
   teamPool(leagueIndex) { return TEAM_NAMES; },
   actionCard: { label: 'Spiel starten', icon: '⚽', desc: '11 vs 11 im Stadion' },
+  trainingBonus(state, stat) { return trainingBonus(state.player, stat); },
   achievements: [
     { id: 'legend',    name: 'Legende',       desc: 'Top-Liga erreicht',       icon: '👑',    check: s => s.career.leagueIndex >= 5 },
     { id: 'hat_trick', name: 'Hattrick-Held', desc: '3+ Tore in einem Spiel', icon: '⚽⚽⚽', check: s => s.career.bestMatchGoals >= 3 },
@@ -44,6 +46,9 @@ export const footballAdapter = {
   ],
 
   createMatch(state) {
+    // The next opponent comes from the fixture list when a season exists
+    { const c = state.career, fx = c.fb ? fixtureForWeek(c.fb, c.week) : null;
+      if (fx) return { opponent: fx.opponent, home: fx.home, type: fx.type, seed: matchSeed(state._saveSeed || 42, c.season, c.week) }; }
     const opponent = pickExcluding(state._rng, TEAM_NAMES, state.career.teamName);
     return {
       opponent,
@@ -56,7 +61,7 @@ export const footballAdapter = {
     const cfg   = this;
     const p     = state.player;
     const c     = state.career;
-    const skill = avgStat(p);
+    const skill = positionRating(p);            // #18: the position weighs the stats
     const leagueDiff = c.leagueIndex * 8;
     const opponentStrength = clamp(30 + leagueDiff + rng.randInt(-10, 10), 20, 95);
     const playerStrength   = clamp(skill + rng.randInt(-8, 8), 10, 100);
@@ -68,7 +73,8 @@ export const footballAdapter = {
     const playerGoals = Math.round((effective / (effective + opponentStrength)) * baseGoals + rng.randInt(0, 3));
     const oppGoals    = Math.round((opponentStrength / (effective + opponentStrength)) * baseGoals + rng.randInt(0, 3));
 
-    const contribution = Math.round(playerGoals * (skill / 100) * rng.randInt(3, 8) / 10);
+    // Benched (injured or suspended): the team plays, the player does not score
+    const contribution = ctx.benched ? 0 : Math.round(playerGoals * (skill / 100) * rng.randInt(3, 8) / 10);
     const assists      = Math.round(contribution * rng.randInt(3, 7) / 10);
     const personal     = contribution - assists;
 
@@ -83,8 +89,7 @@ export const footballAdapter = {
     }
     events.sort((a, b) => a.minute - b.minute);
 
-    const oppNames = TEAM_NAMES.filter(n => n !== c.teamName);
-    const opponent = oppNames[Math.floor(rng.next() * oppNames.length)];
+    const opponent = ctx.opponent || (() => { const pool = TEAM_NAMES.filter(n => n !== c.teamName); return pool[Math.floor(rng.next() * pool.length)]; })();
 
     let result, money;
     if (playerGoals > oppGoals) {
@@ -104,7 +109,7 @@ export const footballAdapter = {
 
     p.money       += money;
     p.totalEarned += money;
-    p.energy       = clamp(p.energy - rng.randInt(15, 30), 0, 100);
+    p.energy       = clamp(p.energy - (ctx.benched ? rng.randInt(2, 6) : rng.randInt(15, 30)), 0, 100);
     p.morale       = result === 'win'  ? clamp(p.morale + rng.randInt(5, 15), 0, 100)
                    : result === 'loss' ? clamp(p.morale - rng.randInt(5, 12), 0, 100)
                    : p.morale;
@@ -116,7 +121,7 @@ export const footballAdapter = {
     // counter never moved when a season was simulated.
     c.week++;
 
-    const newAchs = checkAchievements(state);
+    const newAchs = checkAchievements(state, this.achievements);
     newAchs.forEach(showAchievement);
 
     return {

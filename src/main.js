@@ -7,6 +7,7 @@ import { adapters, getAdapter } from './sports/adapters.js';
 import { footballAdapter }   from './sports/football/index.js';
 import { basketballAdapter } from './sports/basketball/index.js';
 import * as bb                from './sports/basketball/career.js';
+import * as fb                from './sports/football/career.js';
 import { render, renderStats, renderSeasonBar, statColor } from './ui/dom.js';
 import { addLog }               from './ui/log.js';
 
@@ -60,6 +61,12 @@ const App = {
   // Scouting report for the next scheduled opponent (Epic #52)
   bbScout()       { bb.showScout(state, App); },
 
+  // ── Football career ────────────────────────────────
+  fbAcceptTransfer(i) { fb.acceptTransfer(state, App, i); },
+  fbDeclineOffers()   { fb.declineOffers(state, App); },
+  fbKeepPlaying()     { fb.keepPlaying(state, App); },
+  fbRetire()          { fb.retire(state, App); state = null; },
+
   doBasketballMatch() { App.bbSimulate(); },
 
   doTraining(stat) {
@@ -67,11 +74,12 @@ const App = {
     if (p.energy < 20) return;
     // Every action spends time; the sport decides what a unit of time is
     if (!getAdapter(state.sport).career.spendDay(state, App, 'trainiert')) return;
-    const gain = state._rng.randInt(2, 6);
+    const bonus = getAdapter(state.sport).trainingBonus?.(state, stat) || 0;
+    const gain = state._rng.randInt(2, 6) + bonus;
     p.stats[stat] = clamp(p.stats[stat] + gain, 1, 99);
     p.energy = clamp(p.energy - state._rng.randInt(10, 20), 0, 100);
     p.money -= 50;
-    addLog(state, `Training: ${stat} +${gain}`, 'good');
+    addLog(state, `Training: ${stat} +${gain}${bonus ? ' (Positionsbonus)' : ''}`, 'good');
     saveGame(state); App.showHub();
   },
 
@@ -107,11 +115,13 @@ const App = {
     const adapter = getAdapter(state.sport);
     const PROMOTION = 0.55, RELEGATION = 0.30;
     let promoted = false, relegated = false;
-    if (winRate >= PROMOTION && c.leagueIndex < adapter.leagues.length - 1) {
-      c.leagueIndex++; c.promotions++; promoted = true;
-    } else if (winRate < RELEGATION && c.leagueIndex > 0) {
-      c.leagueIndex--; c.relegations++; relegated = true;
-    }
+    // A sport with a table lets the table decide; otherwise the win rate does
+    const verdict = adapter.career?.seasonOutcome ? adapter.career.seasonOutcome(state) : null;
+    if (verdict) { promoted = verdict.promoted; relegated = verdict.relegated; }
+    else if (winRate >= PROMOTION && c.leagueIndex < adapter.leagues.length - 1) promoted = true;
+    else if (winRate < RELEGATION && c.leagueIndex > 0) relegated = true;
+    if (promoted) { c.leagueIndex++; c.promotions++; }
+    if (relegated) { c.leagueIndex--; c.relegations++; }
     if (promoted) {
       const teams = adapter.teamPool(c.leagueIndex);
       c.teamName = teams[Math.floor(state._rng.next() * teams.length)];
@@ -122,6 +132,7 @@ const App = {
       addLog(state, `Abstieg in die ${adapter.leagues[c.leagueIndex]} 😤`, 'bad');
     }
     c.season++; c.week = 1; c.wins = 0; c.losses = 0; c.draws = 0;
+    p.age++;
     const bonus = adapter.seasonBonus ? adapter.seasonBonus(state) : state._rng.randInt(2000, 8000) * (c.leagueIndex + 1);
     p.money += bonus; p.totalEarned += bonus;
     // Re-init league rosters for the new season (basketball only) (Epic #51)
@@ -327,8 +338,9 @@ function _finishFootballMatch() {
   p.money += money; p.totalEarned += money; p.energy = clamp(p.energy - state._rng.randInt(15, 30), 0, 100);
   p.morale = result === 'win' ? clamp(p.morale + state._rng.randInt(5, 15), 0, 100) : result === 'loss' ? clamp(p.morale - state._rng.randInt(5, 12), 0, 100) : p.morale;
   p.fame += result === 'win' ? state._rng.randInt(3, 8) : state._rng.randInt(0, 2);
-  c.week++;
-  if (c.week > c.weeksPerSeason) App.endSeason();
+  const hooks = getAdapter('football').career;
+  hooks.afterMatch(state, { result, myGoals: m.score.home, oppGoals: m.score.away, personal, rng: state._rng });
+  hooks.spendDay(state, App);
   const matchResult = { playerGoals: m.score.home, oppGoals: m.score.away, result, opponent: m.opponent, events: m.events, money, personal, assists, score: `${m.score.home} : ${m.score.away}` };
   addLog(state, `${result === 'win' ? 'Sieg' : result === 'draw' ? 'Unentschieden' : 'Niederlage'} gegen ${m.opponent} (${matchResult.score})`, result === 'win' ? 'good' : result === 'loss' ? 'bad' : 'neutral');
   saveGame(state);
@@ -474,6 +486,7 @@ function _hubScreen() {
       <div class="hud-block"><div class="hud-label">Woche</div><div class="hud-value">${c.week}/${c.weeksPerSeason}</div></div>
       <div class="hud-block"><div class="hud-label">Energie</div><div class="hud-value">${p.energy}%</div></div>
       <div class="hud-block"><div class="hud-label">Geld</div><div class="hud-value">€${fmt(p.money)}</div></div>
+      ${cfg.career.hudExtras?.(state) || ''}
     </div>
     ${renderSeasonBar(c)}
     <div class="card">
