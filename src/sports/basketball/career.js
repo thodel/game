@@ -8,6 +8,8 @@ import { clamp, avgStat, fmt } from '../../core/utils.js';
 import { checkAchievements, showAchievement } from '../../core/achievements.js';
 import { SeasonEngine }      from './season.js';
 import { BasketballEngine }  from './engine.js';
+import { basketballAdapter } from './index.js';
+import { createRNG, matchSeed } from '../../core/rng.js';
 
 const WEEKLY_SKILL_POINTS = 1;
 let pendingGame = null;   // the fixture the live engine is currently playing
@@ -354,36 +356,80 @@ function finishMatch(state, App, res) {
   App.showMatch({
     result: myScore > oppScore ? 'win' : 'loss',
     opponent: pending?.opponent || res.away, money,
-    personal: me.pts, assists: me.ast,
+    personal: me.pts, assists: me.ast, humanMinutes: me.min,
+    playerGoals: playedHome, oppGoals: playedAway,
     score: `${playedHome} : ${playedAway}`,
     projected: projected ? { factor: factor.toFixed(1), pts: line.pts, score: `${myScore}:${oppScore}` } : null,
-    events: res.events.map(e => ({ minute: e.clock, text: e.text, type: e.type })),
+    events: res.events.map(e => ({ minute: clockToMinute(e.clock), clock: e.clock, text: e.text, type: e.type })),
     box: res.box, line: me,
     backTo: pending?.playoff ? 'bbPlayoffs' : 'bbGameDay',
   });
 }
 
+// "Q2 01:03" → game minute on a 0-48 scale (overtime counts on from 48)
+function clockToMinute(clock) {
+  const m = /^(OT|Q)(\d*)\s+(\d+):(\d+)/.exec(clock || '');
+  if (!m) return 0;
+  const period = m[1] === 'OT' ? 5 : Number(m[2]);
+  const remaining = Number(m[3]) + Number(m[4]) / 60;
+  const length = period > 4 ? BasketballEngine.RULES.otMinutes : BasketballEngine.RULES.quarterMinutes;
+  const scale = 12 / Math.max(1, length);
+  return Math.round(((period - 1) * length + (length - remaining)) * scale);
+}
+
 // ── Simulation ────────────────────────────────────────
+// A simulated fixture goes through the same game model as everything else in
+// the adapter — rotations, stamina, timeouts, persistent rosters, tendencies —
+// against the scheduled opponent. The season then records it exactly as it
+// records a game the player played live.
+function simulateFixture(state, { opponentName, isHome, backToBack, restDays, seedKey, isPlayoff }) {
+  const c = state.career;
+  const rng = createRNG(matchSeed(state._saveSeed || 42, c.season, seedKey));
+  const season = c.nba;
+  // The season rates clubs on a 62-84 scale around 73; the game model expects
+  // its own league baseline (30 + 8 per tier) and swings hard around it, so a
+  // club's standing is mapped onto that scale rather than passed through raw.
+  const oppRow = season.teams.find(t => t.name === opponentName);
+  const myRow  = season.teams[season.myTeam];
+  const baseline = 30 + c.leagueIndex * 8;
+  // 0.4 was swept against the game model: an average club goes ~.500, a 90-rated
+  // one ~.900, without the top of the league becoming unbeatable.
+  const onSimScale = row => (row ? Math.round(baseline + (row.strength - 73) * 0.4) : undefined);
+  const sim = basketballAdapter.simulateGame(state, {
+    rng, opponent: opponentName, isHome, backToBack,
+    opponentStrength: onSimScale(oppRow), homeStrength: onSimScale(myRow),
+  });
+  let myScore = sim.homeScore, oppScore = sim.awayScore;
+  if (myScore === oppScore) oppScore -= 2;   // the model settles ties, this is belt and braces
+  const line = { ...simulatedLine(state, myScore > oppScore), pts: sim.human.pts, ast: sim.human.ast, min: sim.human.min };
+  const money = applyResult(state, { myScore, oppScore, opponentName, line, restDays, isPlayoff });
+  return { sim, myScore, oppScore, line, money };
+}
+
+function broadcastResult(state, r, opponentName, backTo) {
+  return {
+    result: r.myScore > r.oppScore ? 'win' : 'loss',
+    opponent: opponentName, money: r.money,
+    playerGoals: r.myScore, oppGoals: r.oppScore,
+    personal: r.line.pts, assists: r.line.ast, humanMinutes: r.line.min,
+    score: `${r.myScore} : ${r.oppScore}`,
+    quarters: r.sim.quarters, events: r.sim.events,
+    boxScore: r.sim.boxScore, oppBox: r.sim.oppBox, scoutingInfo: r.sim.scoutingInfo,
+    simulated: true, line: r.line, backTo,
+  };
+}
+
 export function simulateNextGame(state, App) {
   const info = nextGameInfo(state);
   if (!info) return showPlayoffs(state, App);
-  const season = state.career.nba;
-  const { hs, as } = SeasonEngine.resolve(season, info.fixture);
-  let myScore = info.isHome ? hs : as, oppScore = info.isHome ? as : hs;
-  if (info.backToBack && Math.random() < 0.55) myScore -= rnd(state._rng, 2, 6);
-  if (myScore === oppScore) oppScore -= 2;
-  const line = simulatedLine(state, myScore > oppScore);
-  recordFixture(state, info.fixture, myScore, oppScore);
-  const money = applyResult(state, { myScore, oppScore, opponentName: info.opponent.name, line, restDays: info.restDays });
+  const r = simulateFixture(state, {
+    opponentName: info.opponent.name, isHome: info.isHome, backToBack: info.backToBack,
+    restDays: info.restDays, seedKey: info.fixture.day * 10 + (info.isHome ? 1 : 0),
+  });
+  recordFixture(state, info.fixture, r.myScore, r.oppScore);
   saveGame(state);
   checkAchievements(state).forEach(showAchievement);
-  App.showMatch({
-    result: myScore > oppScore ? 'win' : 'loss',
-    opponent: info.opponent.name, money,
-    personal: line.pts, assists: line.ast,
-    score: `${myScore} : ${oppScore}`,
-    events: [], simulated: true, line, backTo: 'bbGameDay',
-  });
+  App.showMatch(broadcastResult(state, r, info.opponent.name, 'bbGameDay'));
 }
 
 export function simulateSeason(state, App) {
@@ -391,11 +437,11 @@ export function simulateSeason(state, App) {
   let guard = 0;
   while (SeasonEngine.nextFixture(season) && guard++ < 200) {
     const info = nextGameInfo(state);
-    const { hs, as } = SeasonEngine.resolve(season, info.fixture);
-    const myScore = info.isHome ? hs : as, oppScore = info.isHome ? as : hs;
-    const line = simulatedLine(state, myScore > oppScore);
-    recordFixture(state, info.fixture, myScore, oppScore);
-    applyResult(state, { myScore, oppScore, opponentName: info.opponent.name, line, restDays: info.restDays });
+    const r = simulateFixture(state, {
+      opponentName: info.opponent.name, isHome: info.isHome, backToBack: info.backToBack,
+      restDays: info.restDays, seedKey: info.fixture.day * 10 + (info.isHome ? 1 : 0),
+    });
+    recordFixture(state, info.fixture, r.myScore, r.oppScore);
   }
   saveGame(state);
   showPlayoffs(state, App);
@@ -463,14 +509,15 @@ export function simulatePlayoffGame(state, App) {
   const pending = SeasonEngine.nextPlayoffGame(season);
   if (!pending) { SeasonEngine.runPlayoffs(season); return showPlayoffs(state, App); }
   const isHome = pending.game.home === season.myTeam;
-  const { hs, as } = SeasonEngine.resolvePlayoff(season, pending.game);
-  const myScore = isHome ? hs : as, oppScore = isHome ? as : hs;
   const oppId = isHome ? pending.game.away : pending.game.home;
-  const line = simulatedLine(state, myScore > oppScore);
-  SeasonEngine.recordPlayerPlayoffGame(season, pending, hs, as);
-  applyResult(state, { myScore, oppScore, opponentName: season.teams[oppId].name, line, isPlayoff: true, restDays: 2 });
+  const gameNo = pending.kind === 'playin' ? 0 : pending.game.n;
+  const r = simulateFixture(state, {
+    opponentName: season.teams[oppId].name, isHome, backToBack: false, restDays: 2, isPlayoff: true,
+    seedKey: 9000 + (pending.series ? season.playoffs.series.indexOf(pending.series) * 10 : 0) + gameNo,
+  });
+  SeasonEngine.recordPlayerPlayoffGame(season, pending, isHome ? r.myScore : r.oppScore, isHome ? r.oppScore : r.myScore);
   saveGame(state);
-  showPlayoffs(state, App);
+  App.showMatch(broadcastResult(state, r, season.teams[oppId].name, 'bbPlayoffs'));
 }
 
 export function showSeasonSummary(state, App) {
