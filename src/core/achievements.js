@@ -6,7 +6,6 @@
 export const ACHIEVEMENTS = [
   { id: 'first_win',    name: 'Erster Sieg!',      desc: 'Dein erstes Spiel gewonnen',          icon: '🏆',     check: s => s.career.wins >= 1 },
   { id: 'season1',      name: 'Erstes Comeback',   desc: 'Erste Saison abgeschlossen',          icon: '📅',     check: s => s.career.seasons >= 1 },
-  { id: 'hat_trick',    name: 'Hattrick-Held',     desc: '3+ Tore in einem Spiel',              icon: '⚽⚽⚽',  check: s => s.career.bestMatchGoals >= 3 },
   { id: 'promoted',     name: 'Aufsteiger',        desc: 'Erste Liga-Beförderung',              icon: '📈',     check: s => s.career.promotions >= 1 },
   { id: 'mvp',          name: 'MVP',               desc: '10+ Spiele gewonnen',                 icon: '🌟',     check: s => s.career.wins >= 10 },
   { id: 'veteran',      name: 'Veteran',           desc: '5 Saisons gespielt',                  icon: '🎖️',     check: s => s.career.seasons >= 5 },
