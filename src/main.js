@@ -8,6 +8,7 @@ import { footballAdapter }   from './sports/football/index.js';
 import { basketballAdapter } from './sports/basketball/index.js';
 import * as bb                from './sports/basketball/career.js';
 import * as fb                from './sports/football/career.js';
+import { drawMatch as drawFootballMatch3D, drawStadiumPerson } from './sports/football/render.js';
 import { render, renderStats, renderSeasonBar, statColor } from './ui/dom.js';
 import { addLog }               from './ui/log.js';
 
@@ -298,6 +299,13 @@ function _drawStadiumIntro(ctx, w, h, t) {
     const x = (i / 60) * w; ctx.fillStyle = `rgba(255,255,255,${0.15 + Math.sin(t * Math.PI * 2 + i) * 0.05})`;
     ctx.fillRect(x, h * 0.42, 2, 4);
   }
+  // the two teams walk out of the tunnel, keepers first
+  for (let i = 0; i < 11; i++) {
+    const prog = clamp(t * 1.6 - i * 0.06, 0, 1);
+    const yBase = h * 0.62 + i * 14, x = w * 0.5 + (prog - 1) * (w * 0.42 + i * 9);
+    drawStadiumPerson(ctx, x - 60, yBase, 'home', i === 0, 0.9 - i * 0.03);
+    drawStadiumPerson(ctx, w - x + 60, yBase, 'away', i === 0, 0.9 - i * 0.03);
+  }
   ctx.fillStyle = `rgba(255,255,200,${t})`; ctx.font = `bold ${Math.round(48 + t * 20)}px Segoe UI`;
   ctx.textAlign = 'center'; ctx.fillText('🏟️ FUSSBALL', w / 2, h * 0.3);
 }
@@ -472,53 +480,10 @@ function _setupTouchGamepad(match) {
   };
 }
 
-function _drawFootballMatch(m) {
-  _drawFootballPitch(m.context, 960, 540);
-  m.players.slice().sort((a, b) => a.y - b.y).forEach(p => _drawFootballer(m.context, p, p.human));
-  _drawFootball(m.context, m.ball);
-}
+function _drawFootballMatch(m) { drawFootballMatch3D(m); }
 
-function _drawFootballPitch(ctx, w, h) {
-  const sky = ctx.createLinearGradient(0, 0, 0, 160);
-  sky.addColorStop(0, '#07131b'); sky.addColorStop(1, '#26383e');
-  ctx.fillStyle = sky; ctx.fillRect(0, 0, w, h);
-  ctx.fillStyle = '#202a2f'; ctx.fillRect(0, 42, w, 92);
-  const crowd = ['#eef1ef', '#dfff53', '#ef5c53', '#4d78e0'];
-  for (let row = 0; row < 4; row++) for (let col = 0; col < 80; col++) {
-    ctx.fillStyle = crowd[(row * 5 + col * 3) % crowd.length];
-    ctx.globalAlpha = 0.52; ctx.beginPath(); ctx.arc(col * 12 + (row % 2) * 5, 61 + row * 17, 2.1, 0, Math.PI * 2); ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-  const ground = ctx.createLinearGradient(0, 130, 0, h);
-  ground.addColorStop(0, '#1a5c30'); ground.addColorStop(1, '#245c31');
-  ctx.fillStyle = ground; ctx.fillRect(0, 130, w, h - 130);
-  ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(0, h * 0.63); ctx.lineTo(w, h * 0.63); ctx.stroke();
-  ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 1.5;
-  const gx = 960, gy = 205, gw = 80, gh = 130;
-  ctx.strokeRect((gx - gw) / 2, gy, gw, gh);
-  ctx.strokeRect((gx - gw) / 2 - 55, gy + 30, gw - 20, gh - 60);
-  ctx.strokeRect((gx - gw) / 2 + 55, gy + 30, gw - 20, gh - 60);
-  ctx.beginPath(); ctx.arc(gx / 2, h * 0.63, 60, 0, Math.PI * 2); ctx.stroke();
-  ctx.strokeRect(0, 34, w, h - 68);
-  ctx.beginPath(); ctx.moveTo(w / 2, 34); ctx.lineTo(w / 2, h - 34); ctx.stroke();
-}
 
-function _drawFootballer(ctx, p, isHuman) {
-  ctx.save(); ctx.translate(p.x, p.y);
-  ctx.beginPath(); ctx.arc(0, 0, p.r, 0, Math.PI * 2);
-  ctx.fillStyle = p.team === 'home' ? (isHuman ? '#dfff53' : '#a8d94a') : '#4267d6';
-  ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
-  ctx.fillStyle = '#111'; ctx.font = `bold ${p.r * 0.9}px Segoe UI`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(p.number, 0, 0);
-  ctx.restore();
-}
 
-function _drawFootball(ctx, b) {
-  ctx.save(); ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-  ctx.fillStyle = '#fff'; ctx.fill(); ctx.strokeStyle = '#222'; ctx.lineWidth = 1; ctx.stroke();
-  ctx.restore();
-}
 
 // ── Screen builders ───────────────────────────────────
 function _titleScreen() {
