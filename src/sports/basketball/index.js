@@ -188,6 +188,17 @@ export const basketballAdapter = {
   teamsByLeague: TEAMS_BY_LEAGUE,
   teamNames: TEAMS_BY_LEAGUE[1],
   scoreLabel: 'Punkte',
+  starting: { statRange: [45, 65], age: [19, 22], fame: [20, 40], money: [500000, 2000000], skillPoints: 2 },
+  teamPool(leagueIndex) { return TEAMS_BY_LEAGUE[leagueIndex] || TEAMS_BY_LEAGUE[1]; },
+  seasonBonus(state) { return state.career.leagueIndex === 1 ? state._rng.randInt(1500000, 5000000) : state._rng.randInt(50000, 150000); },
+  actionCard: { label: 'Spieltag', icon: '🏀', desc: 'Spielen, simulieren oder scouten' },
+  achievements: [
+    { id: 'legend',       name: 'Legende',      desc: 'Top-Liga erreicht',                icon: '👑', check: s => s.career.leagueIndex >= 1 },
+    { id: 'nba_comeback', name: 'NBA Comeback', desc: 'Nach G-League wieder in die NBA', icon: '💪', check: s => s.career.promotions >= 1 },
+    { id: 'g_league',     name: 'G-League Grind', desc: 'In die G-League abgestiegen',   icon: '😤', check: s => s.career.relegations >= 1 },
+    { id: 'nba_star',     name: 'NBA Star',     desc: '3 Saisons in der NBA überlebt',    icon: '⭐', check: s => s.career.leagueIndex === 1 && s.career.seasons >= 3 },
+    { id: 'max_contract', name: 'Max Contract', desc: '10 Mio. € verdient',               icon: '💎', check: s => s.player.totalEarned >= 10000000 },
+  ],
   boxScoreFields: [
     { key: 'goals',        label: 'Punkte' },
     { key: 'assists',      label: 'Assists' },
@@ -409,7 +420,7 @@ export const basketballAdapter = {
       if (promoted)      { addLog(state, 'Aufstieg in die NBA! 🏀', 'good'); initLeagueRoster(state, cfg, rng); }
       else if (relegated) { addLog(state, 'Abstieg in die G-League…', 'bad'); initLeagueRoster(state, cfg, rng); }
     }
-    checkAchievements(state).forEach(showAchievement);
+    checkAchievements(state, this.achievements).forEach(showAchievement);
     return {
       playerGoals: homeScore, oppGoals: awayScore, result, opponent, events, money,
       personal: human.pts, assists: human.ast, humanMinutes: human.min,

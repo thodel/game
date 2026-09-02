@@ -11,35 +11,27 @@ import { pickOne } from './utils.js';
  * @param {object} rng - RNG instance (used for rand calls)
  */
 export function newState(sport, playerName, position, adapter, rng) {
-  const isBasketball = sport === 'basketball';
-
-  // Generate base stats using the seeded RNG
+  // Everything that differs between sports comes from the adapter
+  const st = adapter.starting || { statRange: [20, 40], age: [17, 17], fame: [0, 0], money: [500, 500], skillPoints: 3 };
   const baseStats = {};
-  adapter.stats.forEach(s => {
-    baseStats[s] = isBasketball ? rng.randInt(45, 65) : rng.randInt(20, 40);
-  });
+  adapter.stats.forEach(s => { baseStats[s] = rng.randInt(st.statRange[0], st.statRange[1]); });
 
   const startLeague = adapter.startLeagueIndex ?? 0;
-  let startTeams;
-  if (isBasketball && adapter.teamsByLeague) {
-    startTeams = adapter.teamsByLeague[startLeague];
-  } else {
-    startTeams = adapter.teamNames;
-  }
+  const startTeams = adapter.teamPool ? adapter.teamPool(startLeague) : adapter.teamNames;
 
   return {
     sport,
     player: {
       name: playerName,
       position,
-      age: isBasketball ? rng.randInt(19, 22) : 17,
+      age: rng.randInt(st.age[0], st.age[1]),
       energy: 100,
       morale: 75,
-      fame: isBasketball ? rng.randInt(20, 40) : 0,
-      money: isBasketball ? rng.randInt(500000, 2000000) : 500,
+      fame: rng.randInt(st.fame[0], st.fame[1]),
+      money: rng.randInt(st.money[0], st.money[1]),
       totalEarned: 0,
       stats: baseStats,
-      skillPoints: isBasketball ? 2 : 3,
+      skillPoints: st.skillPoints,
     },
     career: {
       leagueIndex: startLeague,

@@ -81,3 +81,28 @@ The title screen iterates the registry to build sport-selection buttons — no h
 3. Add teams/stats/positions/leagues to the adapter
 
 No edits to `src/core/` or `src/ui/` are required.
+
+## Career hooks (`adapter.career`)
+
+The app shell (`src/main.js`) never branches on the sport. Everything a sport
+does differently is a hook on `adapter.career`, attached in `src/sports/adapters.js`:
+
+```js
+career: {
+  playMatch(state, App),          // what "play the next match" means: a live canvas match, a game-day screen…
+  spendDay(state, App, verb),     // an action (training, rest) spends time; return false to refuse it
+  simSeason(state, App),          // simulate the rest of the season
+  hubSection(state) → html,       // an extra card on the hub ('' for none)
+  matchScreen(state, result) → html | null,  // a sport's own result screen, or null for the generic one
+}
+```
+
+Plus, on the adapter itself:
+
+```js
+starting: { statRange, age, fame, money, skillPoints },  // where a career begins
+teamPool(leagueIndex) → string[],                          // clubs available in a tier
+actionCard: { label, icon, desc },                          // the hub's "play" card
+achievements: [{ id, name, desc, icon, check(state) }],     // sport-specific; core keeps the common ones
+seasonBonus?(state) → number,                               // end-of-season money
+```
