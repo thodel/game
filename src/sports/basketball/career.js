@@ -316,7 +316,7 @@ function showMatchScreen(state, App, opponentName, isHome) {
         <span><kbd>LEERTASTE</kbd> halten &amp; loslassen: Wurf — in der Abwehr blocken</span>
         <span><kbd>E</kbd> Pass</span><span><kbd>Q</kbd> Ball klauen</span>
       </div>
-      <button class="btn btn-ghost btn-sm live-cancel" onclick="App.bbAbandon()">Spiel abbrechen</button>
+      <button class="btn btn-ghost btn-sm live-cancel" onclick="App.showExitMenu()">⏏️ Spiel verlassen</button>
     </div></div>`);
   requestAnimationFrame(() => BasketballEngine.preview('bb-canvas'));
 }
@@ -347,6 +347,9 @@ export function startMatch(state, App) {
     onFinish: res => finishMatch(state, App, res),
   });
 }
+
+export const isLive = () => BasketballEngine.isRunning();
+export function stopLive() { if (BasketballEngine.isRunning()) BasketballEngine.abort(); pendingGame = null; }
 
 export function abandonMatch(state, App) {
   BasketballEngine.abort();
@@ -749,6 +752,8 @@ export function showScout(state, App) {
 
 // ── Career hooks: what the app shell calls instead of asking which sport it is ──
 export const careerHooks = {
+  // Quick Game: straight into the live match of the first fixture, no screens
+  quickMatch(state, App) { ensureSeason(state, basketballAdapter.teamsByLeague); playSeasonGame(state, App); },
   playMatch(state, App) {
     ensureSeason(state, basketballAdapter.teamsByLeague);
     const season = state.career.nba;
@@ -765,6 +770,24 @@ export const careerHooks = {
     return false;
   },
   simSeason(state, App) { simulateSeason(state, App); },
+  // Giving up a fixture: recorded as a loss everywhere the game would have been
+  forfeitMatch(state, App) {
+    const season = ensureSeason(state, basketballAdapter.teamsByLeague);
+    const pend = pendingGame; pendingGame = null;
+    const rng = createRNG(matchSeed(state._saveSeed || 42, state.career.season, 4242 + state.career.week));
+    const line = { min: 0, pts: 0, reb: 0, ast: 0, stl: 0, blk: 0, tov: 0, pf: 0, fgm: 0, fga: 0, tpm: 0, tpa: 0, ftm: 0, fta: 0 };
+    if (pend?.playoff) {
+      const hs = pend.isHome ? 80 : 100, as = pend.isHome ? 100 : 80;
+      SeasonEngine.recordPlayerPlayoffGame(season, pend.playoff, hs, as);
+      applyResult(state, { myScore: 80, oppScore: 100, opponentName: pend.opponent, line, isPlayoff: true, restDays: 2, rng });
+    } else {
+      const info = nextGameInfo(state);
+      if (!info) return;
+      recordFixture(state, info.fixture, 80, 100);
+      applyResult(state, { myScore: 80, oppScore: 100, opponentName: info.opponent.name, line, restDays: info.restDays, rng });
+    }
+    saveGame(state);
+  },
   hubSection,
   matchScreen,
 };

@@ -1,7 +1,7 @@
 // src/main.js — entry point for Sports Career Game
 import { createRNG, matchSeed } from './core/rng.js';
 import { newState }             from './core/state.js';
-import { saveGame, loadGame, clearSave, exportSave, importSave } from './core/persistence.js';
+import { saveGame, loadGame, clearSave, allSaves, exportSave, importSave } from './core/persistence.js';
 import { avgStat, clamp, fmt }  from './core/utils.js';
 import { adapters, getAdapter } from './sports/adapters.js';
 import { footballAdapter }   from './sports/football/index.js';
@@ -36,7 +36,7 @@ const App = {
     render(_createScreen(cfg));
   },
   showHub() { render(_hubScreen()); },
-  showMatch(result) { render(_matchScreen(result)); },
+  showMatch(result) { if (state?._quickGame) result.backTo = 'showTitle'; render(_matchScreen(result)); },
 
   // ── Actions ─────────────────────────────────────────
   doPlayMatch() {
@@ -97,7 +97,90 @@ const App = {
     getAdapter(state.sport).career.simSeason(state, App);
   },
 
-  doNewGame() { state = null; clearSave(); App.showTitle(); },
+  // Leave this career (its slot stays) and go back to the title
+  doNewGame() { state = null; App.showTitle(); },
+  // Delete this career's slot, then the title
+  deleteCurrentCareer() { if (state) clearSave(state.player?.name); state = null; App.showTitle(); },
+
+  // ── Save slots ─────────────────────────────────────
+  continueGame(name) {
+    const saved = loadGame(name);
+    if (!saved || saved._loadError) return showLoadError(saved || { _loadError: 'MISSING' });
+    state = saved;
+    if (!state._saveSeed) state._saveSeed = Date.now();
+    state._rng = createRNG(state._saveSeed);
+    App.showHub();
+  },
+  confirmDeleteSave(name) {
+    _modal(`<h3>⚠️ Karriere löschen?</h3><p>Die Karriere von <strong>${name}</strong> wird unwiderruflich gelöscht.</p>
+      <div class="modal-btns"><button class="btn btn-danger" onclick="App.deleteSave('${name.replace(/'/g, "\\'")}')">Ja, löschen</button>
+      <button class="btn btn-ghost" onclick="this.closest('.modal-bg').remove()">Abbrechen</button></div>`);
+  },
+  deleteSave(name) { clearSave(name); if (state?.player?.name === name) state = null; _closeModal(); App.showTitle(); },
+
+  // ── Quick Game: one match, no career, nothing saved ──
+  showQuickGame() {
+    render(`<div class="screen"><div class="card" style="text-align:center;padding:32px 24px">
+      <h2 style="margin-bottom:8px">⚡ Quick Game</h2>
+      <p style="color:var(--muted);margin-bottom:24px">Ein Spiel, kein Speichern, kein Setup — einfach spielen.</p>
+      <div class="sport-cards" style="max-width:420px;margin:0 auto 24px">${adapters.map(a => `
+        <div class="sport-card ${a.color}" onclick="App.startQuickGame('${a.id}')"><span class="sport-icon">${a.icon}</span><h2>${a.name}</h2><p>Schnelles Match</p></div>`).join('')}</div>
+      <button class="btn btn-ghost" onclick="App.showTitle()">← Zurück</button></div></div>`);
+  },
+  startQuickGame(sportId) {
+    const adapter = getAdapter(sportId);
+    const seed = Date.now();
+    const rng = createRNG(seed);
+    const first = ['Max', 'Leon', 'Felix', 'Luca', 'Noah', 'Elias', 'Jonas', 'Tim', 'Ben', 'Jan'];
+    const last  = ['Müller', 'Schmidt', 'Weber', 'Wagner', 'Fischer', 'Becker', 'Hoffmann', 'Koch', 'Richter', 'Klein'];
+    const name = `${first[rng.randInt(0, first.length - 1)]} ${last[rng.randInt(0, last.length - 1)]}`;
+    const position = adapter.positions[rng.randInt(0, adapter.positions.length - 1)];
+    state = newState(sportId, name, position, adapter, rng);
+    state._quickGame = true;
+    state._saveSeed = seed; state._rng = rng;
+    // a quick game deserves a player who can play
+    Object.keys(state.player.stats).forEach(k => { state.player.stats[k] = Math.min(99, state.player.stats[k] + 12); });
+    if (adapter.initLeagueRoster) adapter.initLeagueRoster(state, rng);
+    (adapter.career.quickMatch || adapter.career.playMatch)(state, App);
+  },
+
+  // ── Exit menu (#38) ────────────────────────────────
+  showExitMenu() {
+    // A match screen counts even before tip-off / kick-off: leaving it is leaving the game
+    const inMatch = !!liveMatch || (typeof bb.isLive === 'function' && bb.isLive())
+      || !!document.getElementById('bb-canvas') || !!document.getElementById('football-canvas') || !!document.getElementById('stadium-intro-canvas');
+    _modal(inMatch
+      ? `<h3>⏏️ Spiel verlassen</h3><p style="margin-bottom:16px">Das laufende Spiel wird abgebrochen.</p>
+         <div class="modal-btns" style="flex-direction:column;gap:10px">
+           <button class="btn btn-primary" onclick="App.exitMatchSave()">🏳️ Aufgeben &amp; speichern<div style="font-size:.75rem;font-weight:400;margin-top:3px">Zählt als Niederlage, Fortschritt bleibt</div></button>
+           <button class="btn btn-ghost" onclick="App.exitMatchNoSave()">↩️ Verlassen ohne speichern<div style="font-size:.75rem;font-weight:400;margin-top:3px">Zurück zum letzten gespeicherten Stand</div></button>
+           <button class="btn btn-ghost btn-sm" onclick="this.closest('.modal-bg').remove()">← Weiterspielen</button></div>`
+      : `<h3>🏠 Spiel beenden</h3><p style="margin-bottom:16px">Was möchtest du tun?</p>
+         <div class="modal-btns" style="flex-direction:column;gap:10px">
+           <button class="btn btn-primary" onclick="App.saveAndQuit()">💾 Speichern &amp; zum Menü</button>
+           <button class="btn btn-ghost" onclick="App.quitNoSave()">🗑️ Beenden ohne speichern<div style="font-size:.75rem;font-weight:400;margin-top:3px">Zurück zum letzten gespeicherten Stand</div></button>
+           <button class="btn btn-ghost btn-sm" onclick="this.closest('.modal-bg').remove()">← Zurück zum Spiel</button></div>`);
+  },
+  saveAndQuit() { _closeModal(); saveGame(state); state = null; App.showTitle(); },
+  quitNoSave()  { _closeModal(); state = null; App.showTitle(); },
+  exitMatchSave() {
+    _closeModal();
+    _stopLiveMatches();
+    const adapter = getAdapter(state.sport), p = state.player;
+    p.morale = clamp(p.morale - state._rng.randInt(3, 8), 0, 100);
+    addLog(state, 'Spiel abgebrochen — als Niederlage gewertet', 'bad');
+    // the sport records the forfeit where the game would have counted (table, fixture, career)
+    if (adapter.career.forfeitMatch) adapter.career.forfeitMatch(state, App);
+    else { state.career.losses++; adapter.career.spendDay?.(state, App, 'gespielt'); }
+    saveGame(state); App.showHub();
+  },
+  exitMatchNoSave() {
+    _closeModal();
+    _stopLiveMatches();
+    const saved = state?._quickGame ? null : loadGame(state?.player?.name);
+    if (saved && !saved._loadError) { state = saved; state._rng = createRNG(state._saveSeed || Date.now()); addLog(state, 'Spiel verlassen — kein Fortschritt gespeichert', 'neutral'); App.showHub(); }
+    else { state = null; App.showTitle(); }
+  },
 
   spendSkillPoint(stat) {
     const p = state.player;
@@ -445,10 +528,29 @@ function _titleScreen() {
       <h2>${a.name}</h2>
       <p>Karriere-Modus starten</p>
     </div>`).join('');
+  const saves = allSaves();
+  const savesHtml = saves.length ? `<div class="saves">
+    <div class="saves-head">💾 GESPEICHERTE KARRIEREN</div>
+    ${saves.map(s => { const a = getAdapter(s.sport); const n = String(s.player.name).replace(/'/g, "\\'"); return `
+      <div class="card save-row">
+        <span style="font-size:1.5rem">${a?.icon || '🏟️'}</span>
+        <div style="flex:1;min-width:0"><div style="font-weight:700">${s.player.name}</div>
+          <div style="color:var(--muted);font-size:.8rem">${a?.leagues?.[s.career.leagueIndex] || ''} · Saison ${s.career.season} · ${s.player.position} · Alter ${s.player.age}</div></div>
+        <button class="btn btn-primary btn-sm" onclick="App.continueGame('${n}')">Laden</button>
+        <button class="btn btn-ghost btn-sm" title="Karriere löschen" onclick="App.confirmDeleteSave('${n}')">🗑️</button>
+      </div>`; }).join('')}</div>` : '';
+  let hofHtml = '';
+  try {
+    const hof = JSON.parse(localStorage.getItem('sportsCareer_hallOfFame') || '[]');
+    if (hof.length) hofHtml = `<div class="card saves" style="margin-top:12px"><details><summary style="cursor:pointer;font-weight:700">🏆 Hall of Fame (${hof.length})</summary>
+      ${hof.map(e => `<div class="save-row" style="padding:6px 0"><span>${getAdapter(e.sport)?.icon || '🏟️'}</span><div style="flex:1"><strong>${e.name}</strong> <span style="color:var(--muted);font-size:.8rem">${e.seasons} Saisons · ${e.goals} ${getAdapter(e.sport)?.scoreLabel || ''} · ${e.bestLeague || ''}</span></div></div>`).join('')}</details></div>`;
+  } catch { hofHtml = ''; }
   return `<div class="screen title-screen">
     <h1>🏟️ Sports Career</h1>
     <p class="subtitle">Fussball ⚽ & Basketball 🏀 — Dein Karriere-Simulator</p>
+    <div style="margin-bottom:18px"><button class="btn btn-ghost quick-btn" onclick="App.showQuickGame()">⚡ Quick Game — sofort losspielen</button></div>
     <div class="sport-cards">${sportButtons}</div>
+    ${savesHtml}${hofHtml}
   </div>`;
 }
 
@@ -487,6 +589,7 @@ function _hubScreen() {
       <div class="hud-block"><div class="hud-label">Energie</div><div class="hud-value">${p.energy}%</div></div>
       <div class="hud-block"><div class="hud-label">Geld</div><div class="hud-value">€${fmt(p.money)}</div></div>
       ${cfg.career.hudExtras?.(state) || ''}
+      ${state._quickGame ? '' : `<button class="btn btn-ghost btn-sm hud-exit" onclick="App.showExitMenu()">⏏️ Beenden</button>`}
     </div>
     ${renderSeasonBar(c)}
     <div class="card">
@@ -502,7 +605,7 @@ function _hubScreen() {
       <div style="font-size:.8rem;color:var(--muted);margin-bottom:8px">LETZTE ERGEBNISSE</div>
       <div class="log">${logHtml || '<div style="color:var(--muted);font-size:.85rem">Noch keine Spiele gespielt.</div>'}</div>
     </div>
-    <button class="btn btn-ghost btn-block" style="margin-top:8px" onclick="if(confirm('Spielstand wirklich löschen?'))App.doNewGame()">Neues Spiel</button>
+    <button class="btn btn-ghost btn-block" style="margin-top:8px" onclick="App.confirmDeleteSave('${String(p.name).replace(/'/g, "\\'")}')">Karriere löschen</button>
   </div>`;
 }
 
@@ -651,7 +754,7 @@ function _footballKickoffScreen(s, opponent) {
       </div>
       <div class="live-controls">
         <span>Steuerung: WASD/ Pfeiltasten + Leertaste = Schuss, Shift = Sprint</span>
-        <button class="btn btn-sm btn-danger" onclick="App.abandonFootballMatch()">Aufgeben</button>
+        <button class="btn btn-sm btn-danger" onclick="App.showExitMenu()">⏏️ Verlassen</button>
       </div>
     </div>
   </div>`;
@@ -687,15 +790,29 @@ function _createFootballLineup(team, selectHuman = true) {
   });
 }
 
+function _modal(inner) {
+  _closeModal();
+  const el = document.createElement('div'); el.className = 'modal-bg'; el.innerHTML = `<div class="modal">${inner}</div>`;
+  document.body.appendChild(el);
+}
+function _closeModal() { document.querySelector('.modal-bg')?.remove(); }
+function _stopLiveMatches() {
+  if (liveMatch?.raf) cancelAnimationFrame(liveMatch.raf);
+  liveMatch?.cleanup?.(); liveMatch = null;
+  bb.stopLive?.();
+}
+
 function showLoadError(saved) {
   const msg = saved._loadError === 'FUTURE_VERSION'
     ? `Spielstand ist aus einer neueren Version (Schema v${saved.version}). Bitte aktualisiere das Spiel.`
     : saved._loadError === 'CORRUPT_JSON'
     ? 'Spielstand ist beschädigt und konnte nicht geladen werden.'
+    : saved._loadError === 'MISSING'
+    ? 'Diese Karriere gibt es nicht mehr.'
     : 'Spielstand konnte nicht geladen werden.';
   render(`<div class="screen" style="text-align:center;padding:40px">
     <div class="card"><h2 style="color:var(--danger)">Ladefehler</h2><p style="color:var(--muted);margin:16px 0">${msg}</p>
-    <button class="btn btn-primary" onclick="App.doNewGame()">Neu starten</button></div></div>`);
+    <button class="btn btn-primary" onclick="App.doNewGame()">Zum Menü</button></div></div>`);
 }
 
 // ── Init ──────────────────────────────────────────────

@@ -58,6 +58,7 @@ function advanceWeek(state, App) {
 }
 
 export const careerHooks = {
+  quickMatch(state, App) { ensureSeason(state); App.showFootballMatch(); },
   playMatch(state, App) {
     const c = state.career, p = state.player, fb = ensureSeason(state);
     const out = S.unavailable(p);
@@ -71,6 +72,15 @@ export const careerHooks = {
 
   // Training or rest spends the week: wages come in, injuries heal
   spendDay(state, App) { ensureSeason(state); advanceWeek(state, App); return true; },
+
+  // Giving up a match: a 0:3 in the table, the week is spent
+  forfeitMatch(state, App) {
+    const c = state.career;
+    c.losses++;
+    afterMatch(state, { result: 'loss', myGoals: 0, oppGoals: 3, personal: 0, rng: state._rng });
+    advanceWeek(state, App);
+    saveGame(state);
+  },
 
   simSeason(state, App) {
     const c = state.career, season = c.season;
