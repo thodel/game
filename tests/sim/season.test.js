@@ -2,6 +2,7 @@
 // standing, seed and bracket downstream of it wrong.
 import { describe, it, expect } from 'vitest';
 import { SeasonEngine as S } from '../../src/sports/basketball/season.js';
+import { createRNG } from '../../src/core/rng.js';
 
 const NBA = ['Lakers','Celtics','Warriors','Bulls','Heat','Knicks','Nets','Bucks','Suns','Clippers',
   'Nuggets','Mavericks','Spurs','Rockets','Thunder','Blazers','Jazz','Timberwolves','Kings','Pelicans',
@@ -11,7 +12,7 @@ const gamesFor = (s, id) => s.games.filter(g => g.home === id || g.away === id);
 const playAll = s => s.games.forEach(g => { const r = S.resolve(s, g); S.record(s, g, r.hs, r.as); });
 
 describe('season schedule', () => {
-  const s = S.createSeason(NBA, 'Lakers');
+  const s = S.createSeason(NBA, 'Lakers', createRNG(4242));
 
   it('has 30 teams split evenly by conference', () => {
     expect(s.teams).toHaveLength(30);
@@ -49,7 +50,7 @@ describe('season schedule', () => {
 
 describe('standings and playoffs', () => {
   it('keeps the league books balanced', () => {
-    const s = S.createSeason(NBA, 'Lakers');
+    const s = S.createSeason(NBA, 'Lakers', createRNG(4243));
     playAll(s);
     const w = s.teams.reduce((a, t) => a + t.w, 0), l = s.teams.reduce((a, t) => a + t.l, 0);
     expect(w).toBe(l);
@@ -65,7 +66,7 @@ describe('standings and playoffs', () => {
   it('runs a bracket to a champion, favouring the better seed', () => {
     let higher = 0, total = 0;
     for (let k = 0; k < 4; k++) {
-      const s = S.createSeason(NBA, 'Lakers');
+      const s = S.createSeason(NBA, 'Lakers', createRNG(4242 + k));
       playAll(s);
       S.startPlayoffs(s);
       let guard = 0;

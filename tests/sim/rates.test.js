@@ -18,7 +18,7 @@ describe('basketball box-score realism', () => {
     const bump = (k, v) => { totals[k] = (totals[k] || 0) + v; };
     lines = []; games = [];
     for (let i = 0; i < GAMES; i++) {
-      const g = await playBasketballGame({ quarterMinutes: MINUTES });
+      const g = await playBasketballGame({ quarterMinutes: MINUTES, seed: 1000 + i });
       games.push(g);
       bump('pts', g.score.home + g.score.away);
       [...g.box.home, ...g.box.away].forEach(p => {
