@@ -4,7 +4,9 @@ Browserbasiertes Karriere-Spiel für Fussball ⚽ und Basketball 🏀.
 
 ## Spielen
 
-Öffne `index.html` direkt im Browser – kein Server nötig.
+**Online spielen: https://thodel.github.io/game/**
+
+Lokal: `index.html` lädt ES-Module, also mit einem statischen Server öffnen, z. B. `python3 -m http.server` und dann http://localhost:8000.
 
 ## Gameplay
 
