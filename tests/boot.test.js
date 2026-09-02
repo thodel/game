@@ -99,6 +99,26 @@ describe('app boots and navigates', () => {
     expect(played()).toBeGreaterThan(before);
   });
 
+  it('runs a football season through the table, fixtures and contract', () => {
+    globalThis.document.querySelector = () => ({ dataset: { pos: 'Stürmer' } });
+    App.doNewGame(); App.confirmCreate('football');
+    const save = () => JSON.parse(globalThis.localStorage.getItem('sportsCareerGame_v1'));
+    App.showHub();
+    expect(root.innerHTML).toContain('TABELLE');
+    expect(root.innerHTML).toContain('NÄCHSTE SPIELE');
+    const fb = save().career.fb;
+    expect(fb.table).toHaveLength(10); expect(fb.fixtures).toHaveLength(20); expect(fb.contract.wage).toBeGreaterThan(0);
+    const money0 = save().player.money;
+    App.doTraining('Schuss');                        // spends a week: the wage arrives
+    expect(save().player.money).toBeGreaterThan(money0 - 50);
+    App.doSimSeason();
+    const s = save();
+    expect(s.career.season).toBe(2);
+    expect(s.player.age).toBe(18);
+    expect(s.career.fb.season).toBe(2);              // a fresh table for the new season
+    expect(s.career.fb.fixtures.filter(f => f.played)).toHaveLength(0);
+  });
+
   it('resumes from a saved game without throwing', () => {
     globalThis.document.querySelector = () => ({ dataset: { pos: 'Point Guard' } });
     App.confirmCreate('basketball');

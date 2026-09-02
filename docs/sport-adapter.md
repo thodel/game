@@ -94,8 +94,15 @@ career: {
   simSeason(state, App),          // simulate the rest of the season
   hubSection(state) → html,       // an extra card on the hub ('' for none)
   matchScreen(state, result) → html | null,  // a sport's own result screen, or null for the generic one
+  afterMatch?(state, { result, myGoals, oppGoals, personal, rng }),  // what a finished live match does to the season
+  seasonOutcome?(state) → { promoted, relegated, note },             // let a table decide instead of the win rate
+  hudExtras?(state) → html,                                          // extra HUD blocks (injury, suspension)
 }
 ```
+
+Football keeps its season model in `src/sports/football/season.js` (league table, fixtures, contracts,
+injuries, position weights, age curve) under `state.career.fb`; basketball keeps its 82-game season
+under `state.career.nba`. `adapter.trainingBonus?(state, stat)` lets a sport bias training by position.
 
 Plus, on the adapter itself:
 
