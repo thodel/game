@@ -7,7 +7,7 @@
 // shot-clock heaves making up 54% of all attempts.
 const FRAME_MS = 16.7;
 
-export async function playBasketballGame({ quarterMinutes = 12, homeStrength = 76, awayStrength = 76, human, maxFrames = 400000, seed } = {}) {
+export async function playBasketballGame({ quarterMinutes = 12, homeStrength = 76, awayStrength = 76, human, maxFrames = 400000, seed, noRotations = false, noFatigue = false } = {}) {
   const noop = () => {};
   const ctx = new Proxy({}, {
     get: (_, k) => {
@@ -35,7 +35,7 @@ export async function playBasketballGame({ quarterMinutes = 12, homeStrength = 7
   const { BasketballEngine } = await import('../../src/sports/basketball/engine.js');
   const { createRNG } = await import('../../src/core/rng.js');
   BasketballEngine.start({
-    canvasId: 'bb-canvas', quarterMinutes, autoHuman: true, rng: seed === undefined ? undefined : createRNG(seed),
+    canvasId: 'bb-canvas', quarterMinutes, autoHuman: true, noRotations, noFatigue, rng: seed === undefined ? undefined : createRNG(seed),
     home: { name: 'Home', strength: homeStrength },
     away: { name: 'Away', strength: awayStrength },
     human: human || {

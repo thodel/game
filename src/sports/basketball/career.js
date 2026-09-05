@@ -331,6 +331,7 @@ export function startMatch(state, App) {
     canvasId: 'bb-canvas',
     rng: createRNG(matchSeed(state._saveSeed || 42, c.season, fixtureKey)),
     quarterMinutes,
+    backToBack: (pendingGame?.restDays ?? 1) === 0,
     home: { name: c.teamName, strength: clamp(level + rnd(state._rng, -4, 4), 35, 95) },
     away: { name: pendingGame?.opponent || 'Gegner', strength: clamp(level + rnd(state._rng, -6, 8), 35, 96) },
     human: {
@@ -373,7 +374,7 @@ function finishMatch(state, App, res) {
   const projected = factor > 1.05;
   const myScore = scale(playedHome), oppScore = scale(playedAway);
   const line = projected
-    ? { ...me, min: 48, pts: scale(me.pts), reb: scale(me.reb), ast: scale(me.ast) }
+    ? { ...me, min: Math.round(scale(me.min)), pts: scale(me.pts), reb: scale(me.reb), ast: scale(me.ast) }
     : me;
 
   const season = state.career.nba;

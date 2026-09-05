@@ -92,24 +92,30 @@ export const BasketballEngine = (() => {
       r: 0.95 + ROLES[role].height * 0.055,   // body radius in feet, taller = wider
       maxSpeed: 15.5 + ratings.speed / 100 * 6.5, // ft per game-second, sprinting
       slowed: 0, jump: 0, cooldown: 0, paint: 0, fouls: 0, out: false,
+      starter: false, onCourt: false, satAt: 0, benchedFor: 0, stintStart: 0,
+      // Conditioning: how fast the tank empties; speed is the closest thing to it
+      conditioning: 0.85 + ratings.speed / 400,
       catchAt: -99, dribbleFrom: null,
       box: { min: 0, pts: 0, fgm: 0, fga: 0, tpm: 0, tpa: 0, ftm: 0, fta: 0,
              oreb: 0, dreb: 0, ast: 0, stl: 0, blk: 0, tov: 0, pf: 0, pm: 0 },
     };
   }
 
+  // Ten men: five starters and a bench one tier below them. `players` is the
+  // five on the court — every loop in the engine runs over it — and `roster`
+  // is everyone, so a substitution is a swap of objects at a dead ball.
   function makeTeam(side, teamName, strength, humanSpec) {
-    const roster = [];
+    const starters = [], bench = [];
     const humanRole = humanSpec ? (ROLE_BY_LABEL[humanSpec.position] || 'SF') : null;
-    ORDER.forEach((role, i) => {
-      if (humanSpec && role === humanRole) {
-        roster.push(makePlayer(side, role, humanSpec.name, humanSpec.number || ROLES[role].n, humanSpec.ratings, true));
-      } else {
-        const nm = `${pick(FIRST)}. ${pick(LAST)}`;
-        roster.push(makePlayer(side, role, nm, ROLES[role].n + irnd(0, 9), ratingsFor(role, strength)));
-      }
+    ORDER.forEach(role => {
+      const p = (humanSpec && role === humanRole)
+        ? makePlayer(side, role, humanSpec.name, humanSpec.number || ROLES[role].n, humanSpec.ratings, true)
+        : makePlayer(side, role, `${pick(FIRST)}. ${pick(LAST)}`, ROLES[role].n + irnd(0, 9), ratingsFor(role, strength));
+      p.starter = true; p.onCourt = true; p.stintStart = 0; starters.push(p);
+      const b = makePlayer(side, role, `${pick(FIRST)}. ${pick(LAST)}`, ROLES[role].n + 20 + irnd(0, 9), ratingsFor(role, strength - 8));
+      bench.push(b);
     });
-    return { side, name: teamName, players: roster, fouls: 0, score: 0, strength };
+    return { side, name: teamName, players: starters, roster: [...starters, ...bench], fouls: 0, score: 0, strength, timeouts: 7 };
   }
 
   const FIRST = ['J', 'D', 'A', 'M', 'T', 'K', 'C', 'R', 'L', 'B', 'S', 'N'];
@@ -216,8 +222,12 @@ export const BasketballEngine = (() => {
       raf: null, last: performance.now(), cleanup: null,
       message: '',
     };
-    // Tired legs shoot worse and run slower
-    M.human.stamina = clamp(0.80 + (opts.human.energy ?? 100) / 500, 0.6, 1);
+    // Tired legs shoot worse and run slower; the second night of a back-to-back starts lower
+    M.human.stamina = clamp((0.80 + (opts.human.energy ?? 100) / 500) * (opts.backToBack ? 0.85 : 1), 0.5, 1);
+    M.noRotations = !!opts.noRotations;      // tests: measure fatigue with nobody resting
+    M.noFatigue = !!opts.noFatigue;          // tests: isolate the fatigue effect
+    M.stats = { passes: 0, deflect: 0 };
+    M.quarterShooting = { home: [], away: [] };
 
     // Scale: pixels per foot, court centred on the canvas
     M.S = Math.min((canvas.width - 28) / COURT.length, (canvas.height - 28) / COURT.width);
@@ -326,6 +336,7 @@ export const BasketballEngine = (() => {
     if (M.phase === 'freethrow') return ftPress();
     if (M.phase !== 'live') return;
     const h = M.human;
+    if (!h.onCourt) return;
     if (M.ball.holder === h) M.charge = { t: 0 };
     else if (h.jump <= 0) h.jump = 0.55;
   }
@@ -345,12 +356,14 @@ export const BasketballEngine = (() => {
   function pressPass() {
     if (!M || M.phase !== 'live') return;
     const h = M.human;
+    if (!h.onCourt) return;
     if (M.ball.holder === h) { const t = bestPass(h); if (t?.player) passTo(h, t.player); }
     else M.callForBall = M.gameTime; // teammates favour you for a moment
   }
   function pressSteal() {
     if (!M || M.phase !== 'live') return;
     const h = M.human;
+    if (!h.onCourt) return;
     if (M.ball.holder && M.ball.holder.side !== h.side && dist(h, M.ball.holder) < 4 && h.cooldown <= 0) {
       h.cooldown = 0.9;
       const handler = M.ball.holder;
@@ -382,20 +395,48 @@ export const BasketballEngine = (() => {
     if (M && M.phase !== 'finished') M.raf = requestAnimationFrame(frame);
   }
 
+  // Fatigue (#49): the tank empties with distance and sprinting, refills on the
+  // bench and a little during stoppages. A starter at a normal tempo lasts about
+  // nine minutes before a coach would look to the bench.
+  // 12-minute quarters are the reference; a 4-minute game tires and rotates three times as fast
+  const pace = () => 12 / Math.max(1, RULES.quarterMinutes);
+
+  function tickStamina(dt, stoppage) {
+    const k = pace();
+    ['home', 'away'].forEach(side => {
+      M[side].roster.forEach(p => {
+        if (p.out) return;
+        if (p.onCourt) {
+          if (stoppage) p.stamina = Math.min(1, p.stamina + 0.0008 * dt * k);
+          else if (!M.noFatigue) {
+            const frac = Math.min(1, Math.hypot(p.vx, p.vy) / Math.max(1, p.maxSpeed));
+            p.stamina = Math.max(0.15, p.stamina - (0.0005 + frac * 0.0014) * dt * k / p.conditioning);
+          }
+        } else {
+          p.stamina = Math.min(1, p.stamina + 0.0017 * dt * k);
+          p.benchedFor += dt;
+        }
+      });
+    });
+  }
+  const fatigueSpeed = p => 0.6 + 0.4 * (p.stamina ?? 1);
+
   function update(dt) {
     if (M.phase === 'dead') {
       M.deadUntil -= dt;
+      tickStamina(dt, true);
       if (M.deadUntil <= 0) { M.phase = 'live'; }
       movePlayers(dt, true);
       return;
     }
-    if (M.phase === 'freethrow') { updateFreeThrow(dt); movePlayers(dt, true); return; }
+    if (M.phase === 'freethrow') { tickStamina(dt, true); updateFreeThrow(dt); movePlayers(dt, true); return; }
     if (M.phase !== 'live') return;
 
     M.gameTime += dt;
     M.clock -= dt;
     M.shotClock -= dt;
     M.players.forEach(p => { p.box.min += dt / 60; });
+    tickStamina(dt, false);
     if (M.charge) M.charge.t = Math.min(1.15, M.charge.t + dt * 1.05);
     if (M.charge && M.charge.t >= 1.15) releaseShoot();
 
@@ -417,7 +458,7 @@ export const BasketballEngine = (() => {
 
   function movePlayers(dt, idle) {
     const h = M.human;
-    if (!idle && !M.autoHuman && !h.benched) humanSteer(h, dt);
+    if (!idle && !M.autoHuman && !h.benched && h.onCourt) humanSteer(h, dt);
     M.players.forEach(p => {
       p.cooldown = Math.max(0, p.cooldown - dt);
       p.jump = Math.max(0, p.jump - dt);
@@ -456,7 +497,7 @@ export const BasketballEngine = (() => {
     if (Math.hypot(M.touch.x, M.touch.y) > 0.08) { dx = M.touch.x; dy = M.touch.y; }
     const len = Math.hypot(dx, dy);
     const sprint = k.has('ShiftLeft') || k.has('ShiftRight') || M.touch.sprint;
-    let top = h.maxSpeed * (sprint ? 1 : 0.7) * (h.slowed > 0 ? 0.55 : 1) * (h.stamina || 1);
+    let top = h.maxSpeed * (sprint ? 1 : 0.7) * (h.slowed > 0 ? 0.55 : 1) * fatigueSpeed(h);
     if (M.ball.holder === h) top *= 0.9;      // dribbling costs a little pace
     if (M.charge) top *= 0.45;                 // gathering for the shot
     const tvx = len > 0.05 ? dx / len * top : 0, tvy = len > 0.05 ? dy / len * top : 0;
@@ -470,7 +511,7 @@ export const BasketballEngine = (() => {
   }
 
   function steer(p, target, frac, dt) {
-    const top = p.maxSpeed * frac * (p.slowed > 0 ? 0.55 : 1) * (p.stamina || 1);
+    const top = p.maxSpeed * frac * (p.slowed > 0 ? 0.55 : 1) * fatigueSpeed(p);
     const d = Math.hypot(target.x - p.x, target.y - p.y);
     if (d < 0.4) return approach(p, 0, 0, dt, 1.6);
     const ease = d < 3 ? d / 3 : 1;
@@ -515,7 +556,7 @@ export const BasketballEngine = (() => {
       const man = off.players.find(o => o.role === p.role) || off.players[0];
       let target;
       if (man === holder) {
-        target = towards(man, dh, 3.2);
+        target = towards(man, dh, 3.2 + (1 - p.stamina) * 1.6);   // tired closeouts are loose
         if (dist(p, man) < 4 && man.human && random() < dt * 0.5) p.jump = Math.max(p.jump, 0.0);
       } else {
         const gap = 4 + clamp(dist(man, M.ball) / 4.5, 0, 5);
@@ -548,7 +589,7 @@ export const BasketballEngine = (() => {
 
     if (p.think <= 0) {
       p.think = 0.22;
-      const q = shotQuality(p, def);
+      const q = shotQuality(p, def, { forDecision: true });
       const val = shotValue(p, hoop);
       const ev = q * val;
       // Standards drop as the shot clock runs down, the way they do in a real possession
@@ -599,7 +640,7 @@ export const BasketballEngine = (() => {
       const opp = nearestOpp(t);
       const open = dist(t, opp);
       const lane = passLaneRisk(p, t);
-      let ev = shotQuality(t, opp) * shotValue(t, hoop) - lane * 1.4;
+      let ev = shotQuality(t, opp, { forDecision: true }) * shotValue(t, hoop) - lane * 1.4;
       if (t.human && M.callForBall && M.gameTime - M.callForBall < 1.5) ev += 0.35;
       const teamShots = M[p.side].players.reduce((a, q) => a + q.box.fga, 0);
       if (teamShots > 12) ev += clamp((0.24 - t.box.fga / teamShots) * 0.9, -0.12, 0.14);
@@ -632,6 +673,7 @@ export const BasketballEngine = (() => {
     const target = random() < risk
       ? { x: clamp(to.x + rnd(-9, 9), -3, COURT.length + 3), y: clamp(to.y + rnd(-9, 9), -3, COURT.width + 3) }
       : to;
+    M.stats.passes++;
     M.ball.state = 'pass';
     M.ball.holder = null;
     M.ball.from = from;
@@ -783,7 +825,7 @@ export const BasketballEngine = (() => {
 
   // ── Shooting ──────────────────────────────────────
   // Base percentages follow real NBA shot-zone efficiency.
-  function shotQuality(shooter, defender) {
+  function shotQuality(shooter, defender, { forDecision = false } = {}) {
     const hoop = attackHoop(shooter.side);
     const d = dist(shooter, hoop);
     const three = isThree(shooter, hoop);
@@ -806,7 +848,7 @@ export const BasketballEngine = (() => {
     if (defender && defender.jump > 0 && dd < 4.5) p -= 0.05;
     if (Math.hypot(shooter.vx, shooter.vy) > shooter.maxSpeed * 0.6 && d > 6) p -= 0.05;
     if (M.shotClock < 3) p -= 0.07;
-    p -= (1 - (shooter.stamina || 1)) * 0.05;
+    if (!forDecision) p -= (1 - (shooter.stamina ?? 1)) * 0.09;   // tired legs miss — but players do not plan around it
     return clamp(p, 0.03, 0.93);
   }
 
@@ -829,7 +871,7 @@ export const BasketballEngine = (() => {
     if (val === 3) shooter.box.tpa++;
     const travelled = shooter.dribbleFrom ? dist(shooter, shooter.dribbleFrom) : 99;
     const assist = M.lastPass && M.lastPass.to === shooter &&
-      M.gameTime - M.lastPass.at < 2.4 && travelled < 14 ? M.lastPass.from : null;
+      M.gameTime - M.lastPass.at < 2.8 && travelled < 15 ? M.lastPass.from : null;
 
     // Where a miss ends up: long shots produce long rebounds
     const ang = Math.atan2(shooter.y - hoop.y, shooter.x - hoop.x) + rnd(-1.1, 1.1);
@@ -907,12 +949,16 @@ export const BasketballEngine = (() => {
     p.out = true;
     say(`${p.name} hat 6 Fouls — raus`, 'neutral');
     const team = M[p.side];
-    const sub = makePlayer(p.side, p.role, `${pick(FIRST)}. ${pick(LAST)}`, ROLES[p.role].n + irnd(0, 9), ratingsFor(p.role, team.strength - 4));
-    sub.x = p.x; sub.y = p.y; sub.stamina = 1;
+    let sub = team.roster.filter(q => !q.onCourt && !q.out && q.role === p.role).sort((a, b) => b.stamina - a.stamina)[0]
+           || team.roster.filter(q => !q.onCourt && !q.out).sort((a, b) => b.stamina - a.stamina)[0];
+    if (!sub) {   // an empty bench: someone from the stands
+      sub = makePlayer(p.side, p.role, `${pick(FIRST)}. ${pick(LAST)}`, ROLES[p.role].n + irnd(0, 9), ratingsFor(p.role, team.strength - 16));
+      team.roster.push(sub);
+    }
+    sub.x = p.x; sub.y = p.y; sub.onCourt = true;
+    p.onCourt = false;
     team.players[team.players.indexOf(p)] = sub;
     M.players[M.players.indexOf(p)] = sub;
-    team.bench = team.bench || [];
-    team.bench.push(p);
     if (p.human) { M.human.benched = true; M.autoHuman = true; M.fastForward = true; flash('AUSGEFOULT'); }
     if (M.ball.holder === p) giveBall(sub);
   }
@@ -992,15 +1038,78 @@ export const BasketballEngine = (() => {
     deadBall(toSide, opts);
   }
 
+  // Swap `out` for `sub` at the same spot on the floor
+  function substitute(team, out, sub, why) {
+    if (!sub || sub === out) return false;
+    sub.x = out.x; sub.y = out.y; sub.vx = sub.vy = 0; sub.paint = 0;
+    sub.onCourt = true; sub.benchedFor = 0; sub.stintStart = M.gameTime;
+    out.onCourt = false; out.satAt = M.gameTime; out.vx = out.vy = 0;
+    team.players[team.players.indexOf(out)] = sub;
+    M.players[M.players.indexOf(out)] = sub;
+    if (M.ball?.holder === out) giveBall(sub, { keepClock: true });
+    say(`Wechsel ${team.name}: ${sub.name} für ${out.name}${why ? ` (${why})` : ''}`, 'neutral');
+    if (out.human) flash('AUF DIE BANK');
+    if (sub.human) flash('DU BIST DRIN');
+    return true;
+  }
+
+  // How the human has been playing: shooting and turnovers decide how long he sits
+  function humanForm(h) {
+    const b = h.box, fg = b.fga >= 5 ? b.fgm / b.fga : 0.45;
+    if (fg < 0.3 || b.tov >= 4) return 'cold';
+    if (fg > 0.5 && b.fga >= 5) return 'hot';
+    return 'ok';
+  }
+
+  // The coach looks at the floor at every stoppage (#48).
+  function coach(team) {
+    if (M.noRotations) return;
+    const margin = Math.abs(M.home.score - M.away.score);
+    const lateBlowout = M.quarter >= RULES.quarters && margin >= 20 && M.clock < RULES.quarterMinutes * 60 * 0.6;
+    const foulLimit = M.quarter < RULES.quarters ? 4 : 5;
+    const benchFor = role => team.roster.filter(p => !p.onCourt && !p.out && p.role === role);
+    // 1. who has to come off
+    team.players.slice().forEach(p => {
+      let why = null;
+      const stint = (M.gameTime - (p.stintStart || 0)) / 60 * pace();
+      if (p.stamina < 0.45) why = 'müde';
+      else if (stint > (p.starter ? 10.5 : 7) && !(p.human && humanForm(p) === 'hot')) why = 'Verschnaufpause';
+      else if (p.fouls >= foulLimit && p.fouls < RULES.foulOut) why = 'Foulgefahr';
+      else if (lateBlowout && p.starter) why = 'Spiel entschieden';
+      else if (p.box.fga >= 7 && p.box.fgm / p.box.fga < 0.22 && p.stamina < 0.8) why = 'kalt';
+      if (!why) return;
+      const rested = benchFor(p.role).filter(q => q.stamina >= 0.55).sort((a, b) => b.stamina - a.stamina)[0];
+      if (rested) substitute(team, p, rested, why);
+    });
+    // 2. who comes back: a rested starter for the bench man in his spot
+    team.roster.filter(p => p.starter && !p.onCourt && !p.out).forEach(st => {
+      const need = st.human ? { cold: 0.92, ok: 0.82, hot: 0.7 }[humanForm(st)] : 0.8;
+      if (st.stamina < need) return;
+      if (lateBlowout) return;
+      const onCourt = team.players.find(q => q.role === st.role && !q.starter);
+      if (onCourt) substitute(team, onCourt, st, 'zurück');
+    });
+  }
+
   function deadBall(toSide) {
     if (!M || M.phase === 'finished') return;
     M.phase = 'dead';
     M.deadUntil = RULES.inbound;
     M.shotClock = RULES.shotClock;
+    coach(M.home); coach(M.away);
     resetPositions(toSide);
   }
 
+  function recordQuarterShooting() {
+    ['home', 'away'].forEach(sd => {
+      const tot = M[sd].roster.reduce((a, p) => ({ fgm: a.fgm + p.box.fgm, fga: a.fga + p.box.fga }), { fgm: 0, fga: 0 });
+      const prev = M.quarterShooting[sd].reduce((a, q) => ({ fgm: a.fgm + q.fgm, fga: a.fga + q.fga }), { fgm: 0, fga: 0 });
+      M.quarterShooting[sd].push({ fgm: tot.fgm - prev.fgm, fga: tot.fga - prev.fga });
+    });
+  }
+
   function endPeriod() {
+    recordQuarterShooting();
     const tied = M.home.score === M.away.score;
     if (M.quarter >= RULES.quarters && !tied) return finish();
     M.quarter++;
@@ -1013,15 +1122,19 @@ export const BasketballEngine = (() => {
     if (M.quarter === 3) say('Seitenwechsel', 'neutral');
     M.phase = 'dead';
     M.deadUntil = RULES.inbound * 2;
+    // the break: everyone gets some legs back, then the coach sets the five
+    ['home', 'away'].forEach(sd => M[sd].roster.forEach(p => { p.stamina = Math.min(1, p.stamina + (M.quarter === 3 ? 0.18 : 0.08)); }));
+    coach(M.home); coach(M.away);
     resetPositions(random() < 0.5 ? 'home' : 'away', { tip: M.quarter > RULES.quarters });
     syncScoreboard();
   }
 
   function finish() {
+    recordQuarterShooting();
     M.phase = 'finished';
     if (M.raf) cancelAnimationFrame(M.raf);
     M.cleanup?.();
-    const line = t => t.players.concat(t.bench || []).map(p => ({
+    const line = t => t.roster.map(p => ({
       name: p.name, number: p.number, role: p.role, human: !!p.human,
       ...p.box,
       min: Math.round(p.box.min * 10) / 10,
@@ -1035,6 +1148,8 @@ export const BasketballEngine = (() => {
       human: line(M.home).find(l => l.human),
       events: M.events.slice(-14),
       quarters: M.quarter,
+      quarterShooting: M.quarterShooting,
+      stats: M.stats,
     };
     const done = M.opts.onFinish;
     M = null;
@@ -1211,7 +1326,18 @@ export const BasketballEngine = (() => {
       meter(ctx, m, M.ft.shooter, M.ft.meter, 0.85, '#ffd166');
       label(ctx, m, M.ft.shooter, 'LEERTASTE zum Wurf');
     }
-    if (h.paint > 1.6 && !h.benched) label(ctx, m, h, `${(RULES.threeSec - h.paint).toFixed(1)}s Zone`);
+    if (h.paint > 1.6 && !h.benched && h.onCourt) label(ctx, m, h, `${(RULES.threeSec - h.paint).toFixed(1)}s Zone`);
+    // fatigue, always visible (#49)
+    ctx.fillStyle = 'rgba(6,10,14,.7)'; ctx.fillRect(12, m.h - 26, 130, 16);
+    ctx.fillStyle = h.stamina > 0.6 ? '#7ddc7d' : h.stamina > 0.4 ? '#ffd166' : '#ef5c53';
+    ctx.fillRect(14, m.h - 24, 126 * clamp(h.stamina, 0, 1), 12);
+    ctx.fillStyle = '#eef3f7'; ctx.font = '700 9px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(`KRAFT ${Math.round(h.stamina * 100)}%`, 18, m.h - 18);
+    if (!h.onCourt && !h.benched) {
+      ctx.fillStyle = 'rgba(10,14,18,.75)'; ctx.fillRect(m.w / 2 - 150, 10, 300, 26);
+      ctx.fillStyle = '#ffd166'; ctx.font = '800 12px system-ui'; ctx.textAlign = 'center';
+      ctx.fillText(`AUF DER BANK — ${humanForm(h) === 'cold' ? 'der Coach ist nicht zufrieden' : humanForm(h) === 'hot' ? 'kurze Pause' : 'Kraft tanken'}`, m.w / 2, 27);
+    }
     if (M.fastForward) {
       ctx.fillStyle = 'rgba(10,14,18,.72)';
       ctx.fillRect(m.w / 2 - 96, 10, 192, 26);
