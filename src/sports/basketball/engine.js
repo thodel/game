@@ -41,6 +41,12 @@ export const BasketballEngine = (() => {
     foulOut: 6,
     threeSec: 3,
     inbound: 1.2,        // dead-ball pause, in game seconds
+    inboundCount: 5,     // seconds to get the ball in
+    backcourt: 8,        // seconds to bring it over halfway
+    timeouts: 7,
+    otTimeouts: 2,
+    lateTimeouts: 2,     // at most two in the last three minutes
+    timeoutPause: 3,     // the huddle, in game-second equivalents (the clock itself stops)
   };
 
   // ── Positions ─────────────────────────────────────
@@ -115,7 +121,7 @@ export const BasketballEngine = (() => {
       const b = makePlayer(side, role, `${pick(FIRST)}. ${pick(LAST)}`, ROLES[role].n + 20 + irnd(0, 9), ratingsFor(role, strength - 8));
       bench.push(b);
     });
-    return { side, name: teamName, players: starters, roster: [...starters, ...bench], fouls: 0, score: 0, strength, timeouts: 7 };
+    return { side, name: teamName, players: starters, roster: [...starters, ...bench], fouls: 0, score: 0, strength, timeouts: RULES.timeouts, lateTimeouts: 0, lateFouls: 0 };
   }
 
   const FIRST = ['J', 'D', 'A', 'M', 'T', 'K', 'C', 'R', 'L', 'B', 'S', 'N'];
@@ -168,9 +174,9 @@ export const BasketballEngine = (() => {
       p.x = s.x; p.y = s.y; p.vx = p.vy = 0; p.paint = 0;
     });
     const dh = defendHoop(def.side);
+    const men = matchups(def, off);
     def.players.forEach(p => {
-      const man = off.players.find(o => o.role === p.role) || off.players[0];
-      const t = towards(man, dh, 4.5);
+      const t = towards(men.get(p) || off.players[0], dh, 4.5);
       p.x = t.x; p.y = t.y; p.vx = p.vy = 0; p.paint = 0;
     });
     if (tip) {
@@ -226,15 +232,31 @@ export const BasketballEngine = (() => {
     M.human.stamina = clamp((0.80 + (opts.human.energy ?? 100) / 500) * (opts.backToBack ? 0.85 : 1), 0.5, 1);
     M.noRotations = !!opts.noRotations;      // tests: measure fatigue with nobody resting
     M.noFatigue = !!opts.noFatigue;          // tests: isolate the fatigue effect
-    M.stats = { passes: 0, deflect: 0 };
+    M.stats = { passes: 0, deflect: 0, timeouts: { home: 0, away: 0 }, inbounds: 0, fiveSeconds: 0, backcourt: 0,
+                intentionalFouls: 0, intentionalByQ: {}, lastSecondShots: 0, buzzerBeaters: 0, setPlays: 0, setPlayTouches: 0, setPlayShots: 0 };
     M.quarterShooting = { home: [], away: [] };
+    M.timeout = null; M.inbound = null; M.next = null; M.setPlay = null; M.pendingTimeout = null;
+    M.run = { side: null, pts: 0 };
+    M.crowd = 0.5;
+    M.backcourtT = 0;
+    // tests: drop straight into a game situation (#50) — quarter, clock, score, who has the ball
+    if (opts.scenario) {
+      const s = opts.scenario;
+      M.quarter = s.quarter ?? 1;
+      M.clock = s.clock ?? M.clock;
+      M.home.score = s.home ?? 0; M.away.score = s.away ?? 0;
+      M.gameTime = (M.quarter - 1) * RULES.quarterMinutes * 60 + (RULES.quarterMinutes * 60 - M.clock);
+      for (let q = 1; q < M.quarter; q++) { M.quarterShooting.home.push({ fgm: 0, fga: 0 }); M.quarterShooting.away.push({ fgm: 0, fga: 0 }); }
+      [...home.roster, ...away.roster].forEach(p => { p.stintStart = M.gameTime; });
+    }
 
     // Scale: pixels per foot, court centred on the canvas
     M.S = Math.min((canvas.width - 28) / COURT.length, (canvas.height - 28) / COURT.width);
     M.ox = (canvas.width - COURT.length * M.S) / 2;
     M.oy = (canvas.height - COURT.width * M.S) / 2;
 
-    resetPositions(random() < 0.5 ? 'home' : 'away', { tip: true });
+    M.tipWinner = opts.scenario?.possession || (random() < 0.5 ? 'home' : 'away');
+    resetPositions(M.tipWinner, { tip: true });
     say(`Sprungball — ${M[M.possession].name} hat den Ball`, 'neutral');
     bindInput();
     syncScoreboard();
@@ -255,12 +277,13 @@ export const BasketballEngine = (() => {
   function bindInput() {
     const down = e => {
       if (!M) return;
-      if ([...MOVE_KEYS, 'Space', 'KeyE', 'KeyQ'].includes(e.code)) e.preventDefault();
+      if ([...MOVE_KEYS, 'Space', 'KeyE', 'KeyQ', 'KeyT'].includes(e.code)) e.preventDefault();
       if (e.repeat) return;
       M.keys.add(e.code);
       if (e.code === 'Space') pressShoot();
       if (e.code === 'KeyE') pressPass();
       if (e.code === 'KeyQ') pressSteal();
+      if (e.code === 'KeyT') requestTimeout();
     };
     const up = e => {
       if (!M) return;
@@ -270,9 +293,13 @@ export const BasketballEngine = (() => {
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
     const untouch = bindTouch();
+    const toBtn = document.getElementById('bb-to-btn');
+    const onTO = () => requestTimeout();
+    toBtn?.addEventListener('click', onTO);
     M.cleanup = () => {
       window.removeEventListener('keydown', down);
       window.removeEventListener('keyup', up);
+      toBtn?.removeEventListener('click', onTO);
       untouch();
     };
   }
@@ -283,7 +310,10 @@ export const BasketballEngine = (() => {
     const btnShoot = document.getElementById('bb-shoot');
     const btnPass = document.getElementById('bb-pass');
     const btnSprint = document.getElementById('bb-sprint');
+    const btnTO = document.getElementById('bb-timeout');
     if (!stick || !knob) return () => {};
+    const toHit = e => { e.preventDefault(); requestTimeout(); };
+    btnTO?.addEventListener('pointerdown', toHit);
     const move = e => {
       if (!M || M.touch.pointerId !== e.pointerId) return;
       e.preventDefault();
@@ -316,6 +346,7 @@ export const BasketballEngine = (() => {
     btnSprint.addEventListener('pointerup', sprintOff);
     btnSprint.addEventListener('pointercancel', sprintOff);
     return () => {
+      btnTO?.removeEventListener('pointerdown', toHit);
       stick.removeEventListener('pointerdown', startStick);
       stick.removeEventListener('pointermove', move);
       stick.removeEventListener('pointerup', endStick);
@@ -354,9 +385,14 @@ export const BasketballEngine = (() => {
     return -0.10;
   }
   function pressPass() {
-    if (!M || M.phase !== 'live') return;
+    if (!M || (M.phase !== 'live' && M.phase !== 'inbound')) return;
     const h = M.human;
     if (!h.onCourt) return;
+    if (M.phase === 'inbound') {
+      if (M.inbound.inbounder === h) inboundPass(h);
+      else M.callForBall = M.gameTime;
+      return;
+    }
     if (M.ball.holder === h) { const t = bestPass(h); if (t?.player) passTo(h, t.player); }
     else M.callForBall = M.gameTime; // teammates favour you for a moment
   }
@@ -407,7 +443,7 @@ export const BasketballEngine = (() => {
       M[side].roster.forEach(p => {
         if (p.out) return;
         if (p.onCourt) {
-          if (stoppage) p.stamina = Math.min(1, p.stamina + 0.0008 * dt * k);
+          if (stoppage) p.stamina = Math.min(1, p.stamina + 0.0004 * dt * k);
           else if (!M.noFatigue) {
             const frac = Math.min(1, Math.hypot(p.vx, p.vy) / Math.max(1, p.maxSpeed));
             p.stamina = Math.max(0.15, p.stamina - (0.0005 + frac * 0.0014) * dt * k / p.conditioning);
@@ -425,10 +461,16 @@ export const BasketballEngine = (() => {
     if (M.phase === 'dead') {
       M.deadUntil -= dt;
       tickStamina(dt, true);
-      if (M.deadUntil <= 0) { M.phase = 'live'; }
       movePlayers(dt, true);
+      if (M.deadUntil <= 0) {
+        if (M.clock <= 0) return endPeriod();           // the period ended on that whistle
+        if (M.next) { M.phase = 'inbound'; M.inbound = { ...M.next, count: RULES.inboundCount }; M.next = null; M.stats.inbounds++; }
+        else M.phase = 'live';                           // a jump ball
+      }
       return;
     }
+    if (M.phase === 'timeout') return updateTimeout(dt);
+    if (M.phase === 'inbound') return updateInbound(dt);
     if (M.phase === 'freethrow') { tickStamina(dt, true); updateFreeThrow(dt); movePlayers(dt, true); return; }
     if (M.phase !== 'live') return;
 
@@ -437,29 +479,48 @@ export const BasketballEngine = (() => {
     M.shotClock -= dt;
     M.players.forEach(p => { p.box.min += dt / 60; });
     tickStamina(dt, false);
+    M.crowd += (0.5 - M.crowd) * dt * 0.02;
+    if (M.setPlay) { M.setPlay.left -= dt; if (M.setPlay.left <= 0) M.setPlay = null; }
     if (M.charge) M.charge.t = Math.min(1.15, M.charge.t + dt * 1.05);
     if (M.charge && M.charge.t >= 1.15) releaseShoot();
 
-    if (M.clock <= 0) { M.clock = 0; return endPeriod(); }
+    // The horn: a shot already in the air still counts
+    if (M.clock <= 0) { M.clock = 0; if (M.ball.state !== 'shot') return endPeriod(); }
     if (M.shotClock <= 0 && M.ball.state !== 'shot') {
       say('24-Sekunden-Verstoss', M.possession === 'home' ? 'opponent' : 'player');
       if (M.ball.holder) M.ball.holder.box.tov++;
       return turnover(other(M.possession));
     }
+    // Eight seconds to bring the ball over halfway
+    const holder = M.ball.holder;
+    if (holder && M.ball.state === 'held' && inBackcourt(holder)) {
+      M.backcourtT += dt;
+      if (M.backcourtT > RULES.backcourt) {
+        say(`8 Sekunden — ${holder.name}`, holder.side === 'home' ? 'opponent' : 'player');
+        holder.box.tov++; M.stats.backcourt++;
+        return turnover(other(holder.side));
+      }
+    } else if (holder) M.backcourtT = 0;
 
     decide(dt);
     movePlayers(dt, false);
     updateBall(dt);
+    if (!M || M.phase !== 'live') return;
+    if (M.clock <= 0 && M.ball.state !== 'shot') return endPeriod();   // the horn went while the ball was loose
     syncScoreboard();
   }
+
+  const inBackcourt = p => { const h = attackHoop(p.side); return h.dir > 0 ? p.x > COURT.length / 2 : p.x < COURT.length / 2; };
 
   // ── Movement ──────────────────────────────────────
   const ACCEL = 52; // ft per game-second²
 
   function movePlayers(dt, idle) {
     const h = M.human;
-    if (!idle && !M.autoHuman && !h.benched && h.onCourt) humanSteer(h, dt);
+    const pinned = M.inbound?.inbounder || null;   // the inbounder stays on the line
+    if (!idle && !M.autoHuman && !h.benched && h.onCourt && h !== pinned) humanSteer(h, dt);
     M.players.forEach(p => {
+      if (p === pinned) { p.vx = p.vy = 0; }
       p.cooldown = Math.max(0, p.cooldown - dt);
       p.jump = Math.max(0, p.jump - dt);
       p.slowed = Math.max(0, p.slowed - dt);
@@ -522,18 +583,40 @@ export const BasketballEngine = (() => {
     .filter(q => q.side !== p.side)
     .reduce((a, b) => (dist(a, p) < dist(b, p) ? a : b));
 
+  // Who guards whom: by position first, then whoever is still unmarked — so a
+  // team fielding two centres after foul-outs does not leave a wing free all night
+  function matchups(def, off) {
+    const map = new Map(), taken = new Set();
+    def.players.forEach(p => {
+      const m = off.players.find(o => o.role === p.role && !taken.has(o));
+      if (m) { map.set(p, m); taken.add(m); }
+    });
+    def.players.filter(p => !map.has(p)).forEach(p => {
+      const m = off.players.filter(o => !taken.has(o)).sort((a, b) => dist(a, p) - dist(b, p))[0] || off.players[0];
+      map.set(p, m); taken.add(m);
+    });
+    return map;
+  }
+
   // ── Decision making ───────────────────────────────
   function decide(dt) {
-    const off = M[M.possession], def = M[other(M.possession)];
+    const off = M[M.possession];
     const spots = spotsFor(off.side);
     const hoop = attackHoop(off.side);
     const holder = M.ball.holder;
+    const play = M.setPlay?.side === off.side ? M.setPlay : null;
 
     off.players.forEach(p => {
       if (p.human && !M.autoHuman) return;
       if (p === holder) return handlerAI(p, dt);
       // Off-ball: hold the spot, crash the glass while a shot is up, cut now and then
       if (M.ball.state === 'shot') return steer(p, reboundSpot(p, hoop), 0.95, dt);
+      // The play out of the huddle: the screener walks into the shooter's man, the shooter comes off him
+      if (play && p === play.target) return steer(p, play.spot, 0.95, dt);
+      if (play && p === play.screener && play.left > 4) {
+        const mark = [...matchups(M[other(off.side)], off).entries()].find(([, m]) => m === play.target)?.[0] || nearestOpp(play.target);
+        return steer(p, towards(mark, play.target, 1.4), 0.9, dt);
+      }
       const spot = spots[p.role];
       if (p.paint > 1.7) {
         const out = { x: p.x, y: p.y + (p.y > MID ? 4 : -4) };
@@ -546,17 +629,57 @@ export const BasketballEngine = (() => {
       }
       steer(p, cut ? hoop : { x: spot.x + Math.sin(M.gameTime * 0.6 + p.number) * 1.6, y: spot.y + Math.cos(M.gameTime * 0.5 + p.number) * 1.6 }, cut ? 0.95 : 0.6, dt);
     });
+    defend(dt);
+  }
 
-    // Defence: man-to-man with rim help
+  // Trailing late while the other team holds the ball, the only play left is to foul (#50)
+  function shouldFoul(side) {
+    if (M.quarter < RULES.quarters) return false;
+    const margin = M[other(side)].score - M[side].score;
+    if (margin <= 0 || margin > 3 + M.clock / 8) return false;
+    if (M.clock > 45 || M.clock < 2.5) return false;
+    if (M.shotClock < 5 && M.shotClock < M.clock) return false;   // a stop is coming anyway
+    return true;
+  }
+
+  // Defence: man-to-man with rim help
+  function defend(dt) {
+    const off = M[M.possession], def = M[other(M.possession)];
+    const holder = M.ball.holder;
     const dh = defendHoop(def.side);
     const driving = holder && dist(holder, attackHoop(holder.side)) < 14;
+    const foulHim = holder && M.ball.state === 'held' && M.phase === 'live' && shouldFoul(def.side);
+    const chaser = foulHim
+      ? def.players.filter(p => (!p.human || M.autoHuman) && p.box.pf < RULES.foulOut - 1).sort((a, b) => dist(a, holder) - dist(b, holder))[0] || null
+      : null;
+    const men = matchups(def, off);
     def.players.forEach(p => {
       if (p.human && !M.autoHuman) return;
       if (M.ball.state === 'shot') return steer(p, reboundSpot(p, dh), 0.95, dt);
-      const man = off.players.find(o => o.role === p.role) || off.players[0];
-      let target;
+      if (p === chaser) {
+        steer(p, holder, 1, dt);
+        if (dist(p, holder) < 2.8 && p.cooldown <= 0 && random() < dt * 2.5) {
+          p.cooldown = 1.2;
+          M.stats.intentionalFouls++;
+          M.stats.intentionalByQ[M.quarter] = (M.stats.intentionalByQ[M.quarter] || 0) + 1;
+          say(`Absichtliches Foul — ${p.name} stoppt die Uhr`, 'neutral');
+          foul(p, holder, 0, false);
+        }
+        return;
+      }
+      // Transition: a defender the ball has already passed sprints back to the paint before he finds his man
+      if (holder && M.ball.state === 'held' && dist(p, dh) > dist(holder, dh) + 3 && dist(holder, dh) > 6) {
+        const t = towards(dh, holder, 9);
+        const spread = { PG: -6, SG: 6, SF: -3, PF: 3, C: 0 }[p.role] || 0;
+        return steer(p, { x: t.x, y: clamp(t.y + spread, 3, COURT.width - 3) }, 1, dt);
+      }
+      const man = men.get(p) || off.players[0];   // a man who came on during this very loop
+      let target, speed = 0.92;
       if (man === holder) {
-        target = towards(man, dh, 3.2 + (1 - p.stamina) * 1.6);   // tired closeouts are loose
+        // in transition the defender gets back ahead of the ball; set, he sits 3 ft off — tired closeouts are loose
+        const back = inBackcourt(man);
+        target = towards(man, dh, back ? 7 : 3.2 + (1 - p.stamina) * 1.6);
+        if (back) speed = 1;
         if (dist(p, man) < 4 && man.human && random() < dt * 0.5) p.jump = Math.max(p.jump, 0.0);
       } else {
         const gap = 4 + clamp(dist(man, M.ball) / 4.5, 0, 5);
@@ -566,7 +689,7 @@ export const BasketballEngine = (() => {
           target = { x: lerp(target.x, help.x, 0.4), y: lerp(target.y, help.y, 0.4) };
         }
       }
-      steer(p, target, 0.92, dt);
+      steer(p, target, speed, dt);
       // contest: jump when a shot is likely right next to you
       const rimAttack = holder && dist(holder, dh) < 10;
       if (holder && dist(p, holder) < 4.2 && p.jump <= 0 && random() < dt * (rimAttack ? 2.2 : 0.9)) p.jump = 0.5;
@@ -587,27 +710,61 @@ export const BasketballEngine = (() => {
     const dd = dist(p, def);
     const d = dist(p, hoop);
 
+    // Caught under the rim with bodies around: a contested layup or a kick-out beats a three-second call
+    if (p.paint > 2.0 && d < 8) {
+      const kick = bestPass(p);
+      const look = shotQuality(p, def, { forDecision: true });
+      if (kick && (kick.ev > 0.3 || look < 0.35)) return passTo(p, kick.player);
+      return attemptShot(p, 0, 'inside');
+    }
+
     if (p.think <= 0) {
       p.think = 0.22;
+      // The game clock is the shot clock when it is shorter (#50)
+      const effClock = Math.min(M.shotClock, M.clock);
+      // Bring the ball up first: no shot from the backcourt, a pass only to a man well ahead
+      if (inBackcourt(p) && effClock >= 3) {
+        const ahead = M[p.side].players.filter(t => t !== p && dist(t, hoop) < d - 15 && dist(t, nearestOpp(t)) > 6)
+          .sort((a, b) => dist(a, hoop) - dist(b, hoop))[0];
+        if (ahead && passLaneRisk(p, ahead) < 0.1 && random() < 0.5) return passTo(p, ahead);
+        p.driving = false;
+        return advance(p, def, hoop, dd, dt);
+      }
       const q = shotQuality(p, def, { forDecision: true });
       const val = shotValue(p, hoop);
       const ev = q * val;
       // Standards drop as the shot clock runs down, the way they do in a real possession
-      const urgency = clamp(1 - M.shotClock / RULES.shotClock, 0, 1);
+      const urgency = clamp(1 - effClock / RULES.shotClock, 0, 1);
       // A player who has taken far more than his share holds a higher standard
       const teamShots = M[p.side].players.reduce((a, q) => a + q.box.fga, 0);
       const share = teamShots > 12 ? p.box.fga / teamShots : 0.2;
       const hog = Math.max(0, share - 0.27) * 2.2;
-      const desperate = M.shotClock < 3.0;
+      const desperate = effClock < 3.0;
       // A good look inside is worth taking even when a three grades higher on paper
       const inside = d < 8 && q > 0.47 + hog * 0.5 && dd > 1.8;
       // One threshold for both shot types: the question is only whether this
       // look beats what another possession of ball movement would produce.
-      const bar = 1.16 - Math.pow(urgency, 1.7) * 0.46 + hog;
+      let bar = 1.19 - Math.pow(urgency, 1.7) * 0.46 + hog;
+      // End of period, end of game (#50)
+      const margin = M[p.side].score - M[other(p.side)].score;
+      const late = M.quarter >= RULES.quarters && M.clock < 40;
+      const lastShot = M.clock < RULES.shotClock + 4 && M.clock > 7 && !(late && margin < 0);
+      if (lastShot) bar += 0.5;                              // hold for the last shot of the period
+      if (late && margin > 0 && M.clock > 6) bar += 0.3;     // ahead: milk the clock
+      if (late && margin < 0) bar -= 0.25;                    // behind: hunt a shot
+      const needThree = late && margin <= -3 && M.clock < 15 && val === 2 && d > 4;
+      // The play drawn up in the huddle: everyone else waits for the shooter's look
+      const play = M.setPlay?.side === p.side ? M.setPlay : null;
+      if (play && p !== play.target && play.left > 4 && !inside) bar += 0.4;
       const settled = ev > bar && dd > 3.6 - urgency * 2.4;
-      if (desperate || inside || settled) return attemptShot(p, 0, desperate ? 'desperate' : inside ? 'inside' : 'settled');
+      if (needThree && !desperate) {
+        p.driving = false;
+        if (d < 23) return steer(p, towards(hoop, p, 24.5), 0.9, dt);   // step out to the arc
+      } else if (desperate || inside || settled) {
+        return attemptShot(p, 0, desperate ? 'desperate' : inside ? 'inside' : 'settled');
+      }
       const held = M.gameTime - (p.catchAt || 0);
-      const mate = M.shotClock > 4 && held > 0.7 ? bestPass(p) : null;
+      const mate = effClock > 4 && held > 0.7 ? bestPass(p) : null;
       if (mate && mate.ev > ev + Math.max(0.02, 0.16 - held * 0.03) + urgency * 0.25) return passTo(p, mate.player);
       // drive if the lane is not walled off
       const lane = towards(p, hoop, Math.min(d, 12));
@@ -616,6 +773,7 @@ export const BasketballEngine = (() => {
       p.driving = !clogged && d > 5 && (dd > 6 || edge > 5);
     }
 
+    if (inBackcourt(p) && Math.min(M.shotClock, M.clock) >= 3) return advance(p, def, hoop, dd, dt);
     if (p.driving && d > 4.5) {
       const help = M.players.filter(x => x.side !== p.side && dist(x, p) < 6.5).length;
       if (help >= 2 && M.shotClock > 3.5) {
@@ -632,6 +790,16 @@ export const BasketballEngine = (() => {
     steer(p, { x: lerp(p.x, hoop.x, 0.15), y: p.y + Math.sin(M.gameTime) * 2 }, 0.55, dt);
   }
 
+  // Up the court, around the man in front rather than away from him
+  function advance(p, def, hoop, dd, dt) {
+    let t = towards(p, hoop, 20);
+    if (dd < 5) {
+      const side = p.y - def.y >= 0 ? 1 : -1;
+      t = { x: t.x, y: clamp(p.y + side * 8, 4, COURT.width - 4) };
+    }
+    return steer(p, t, 0.85, dt);
+  }
+
   function bestPass(p) {
     const hoop = attackHoop(p.side);
     let best = null;
@@ -642,6 +810,7 @@ export const BasketballEngine = (() => {
       const lane = passLaneRisk(p, t);
       let ev = shotQuality(t, opp, { forDecision: true }) * shotValue(t, hoop) - lane * 1.4;
       if (t.human && M.callForBall && M.gameTime - M.callForBall < 1.5) ev += 0.35;
+      if (M.setPlay?.side === p.side && t === M.setPlay.target && M.setPlay.left > 3) ev += 0.4;
       const teamShots = M[p.side].players.reduce((a, q) => a + q.box.fga, 0);
       if (teamShots > 12) ev += clamp((0.24 - t.box.fga / teamShots) * 0.9, -0.12, 0.14);
       if (dist(p, t) > 40) ev -= 0.25;
@@ -695,6 +864,16 @@ export const BasketballEngine = (() => {
     if (flip) { M.possession = p.side; M.shotClock = RULES.shotClock; M.lastPass = null; }
     else if (oreb) M.shotClock = Math.max(M.shotClock, RULES.shotClockOreb);
     else if (!keepClock) M.shotClock = M.shotClock;
+    if (flip) M.backcourtT = 0;
+    if (M.setPlay?.side === p.side && p === M.setPlay.target && !M.setPlay.touched) { M.setPlay.touched = true; M.stats.setPlayTouches++; }
+    ballLive();
+  }
+
+  // The inbound pass has been touched: the ball is live and the clock runs
+  function ballLive() {
+    if (M.phase !== 'inbound') return;
+    M.phase = 'live';
+    M.inbound = null;
   }
 
   // ── Ball ──────────────────────────────────────────
@@ -702,12 +881,13 @@ export const BasketballEngine = (() => {
     const b = M.ball;
     if (b.state === 'held') {
       const p = b.holder;
+      const live = M.phase === 'live';
       // Contact on the way to the rim
       const rim = attackHoop(p.side);
-      if (dist(p, rim) < 11 && Math.hypot(p.vx, p.vy) > p.maxSpeed * 0.4) {
+      if (live && dist(p, rim) < 11 && Math.hypot(p.vx, p.vy) > p.maxSpeed * 0.4) {
         for (const q of M.players) {
           if (q.side === p.side || dist(q, p) > 2.2 || q.cooldown > 0) continue;
-          if (random() < 0.40 * dt) { q.cooldown = 1.2; foul(q, p, 0, false); return; }
+          if (random() < 0.40 * dt * (q.box.pf >= 4 ? 0.5 : 1)) { q.cooldown = 1.2; foul(q, p, 0, false); return; }   // foul trouble: play it softer
         }
       }
       const bob = Math.sin(M.gameTime * 9) * 0.5;
@@ -716,9 +896,9 @@ export const BasketballEngine = (() => {
       b.z = 1.2 + bob;
       // pressure: strip attempts from close defenders
       M.players.forEach(q => {
-        if (M.ball.holder !== p) return;
+        if (!live || M.ball.holder !== p) return;
         if (q.side === p.side || dist(q, p) > 2.4 || q.cooldown > 0) return;
-        const chance = 0.015 * (q.ratings.defense / 100) * (1 - p.ratings.handle / 190) * dt;
+        const chance = 0.024 * (q.ratings.defense / 100) * (1 - p.ratings.handle / 190) * dt;
         if (random() < chance) {
           q.cooldown = 1.1; q.box.stl++; p.box.tov++;
           say(`Ballverlust — ${q.name} greift zu`, q.side === 'home' ? 'player' : 'opponent');
@@ -745,6 +925,7 @@ export const BasketballEngine = (() => {
           say(`Fehlpass ${b.from.name}`, b.from.side === 'home' ? 'opponent' : 'player');
           b.state = 'loose'; b.lastTouch = b.from.side; b.z = 2;
           b.vx = rnd(-10, 10); b.vy = rnd(-10, 10);
+          ballLive();
           return;
         }
         if (catcher.side !== b.from.side) {
@@ -762,7 +943,7 @@ export const BasketballEngine = (() => {
         if (q.side === b.from.side || b.seen.has(q)) continue;
         if (dist(q, b) < 1.3) {
           b.seen.add(q);
-          if (random() < 0.085) {
+          if (random() < 0.12) {
             q.box.stl++; b.from.box.tov++;
             say(`${q.name} fängt den Pass ab`, q.side === 'home' ? 'player' : 'opponent');
             return giveBall(q);
@@ -849,6 +1030,9 @@ export const BasketballEngine = (() => {
     if (Math.hypot(shooter.vx, shooter.vy) > shooter.maxSpeed * 0.6 && d > 6) p -= 0.05;
     if (M.shotClock < 3) p -= 0.07;
     if (!forDecision) p -= (1 - (shooter.stamina ?? 1)) * 0.09;   // tired legs miss — but players do not plan around it
+    // Shooters make a little more from deep than the decision model credits; kept out of the
+    // decision so the shot mix stays at the real share rather than tipping to threes
+    if (!forDecision && three) p += 0.05;
     return clamp(p, 0.03, 0.93);
   }
 
@@ -869,6 +1053,9 @@ export const BasketballEngine = (() => {
 
     shooter.box.fga++;
     if (val === 3) shooter.box.tpa++;
+    if (M.opts.trace) (M.stats.shots ||= []).push({ q: M.quarter, clock: Math.round(M.clock), side: shooter.side, role: shooter.role, d: Math.round(d), dd: Math.round(dd * 10) / 10, why, made });
+    if (M.clock < 4) M.stats.lastSecondShots++;
+    if (M.setPlay?.side === shooter.side && shooter === M.setPlay.target) M.stats.setPlayShots++;
     const travelled = shooter.dribbleFrom ? dist(shooter, shooter.dribbleFrom) : 99;
     const assist = M.lastPass && M.lastPass.to === shooter &&
       M.gameTime - M.lastPass.at < 2.8 && travelled < 15 ? M.lastPass.from : null;
@@ -911,9 +1098,11 @@ export const BasketballEngine = (() => {
       if (s.assist) s.assist.box.ast++;
       score(s.shooter, s.val);
       const label = s.val === 3 ? 'Dreier' : dist(s.from, s.hoop) < 5 ? 'Korbleger' : 'Wurf';
-      say(`${label} ${s.shooter.name} (${s.val})`, s.shooter.side === 'home' ? 'player' : 'opponent');
+      const buzzer = M.clock <= 0;
+      say(`${buzzer ? 'BUZZER-BEATER! ' : ''}${label} ${s.shooter.name} (${s.val})`, s.shooter.side === 'home' ? 'player' : 'opponent');
+      if (buzzer) { M.stats.buzzerBeaters++; flash('BUZZER-BEATER!'); }
       if (s.fouled) { foul(s.defender, s.shooter, 1, true); return; }
-      return deadBall(other(s.shooter.side));
+      return deadBall(other(s.shooter.side), { madeBasket: true });
     }
     // Missed
     if (s.fouled) { foul(s.defender, s.shooter, s.val, false); return; }
@@ -926,22 +1115,43 @@ export const BasketballEngine = (() => {
   }
 
   function score(shooter, pts) {
-    M[shooter.side].score += pts;
+    const side = shooter.side;
+    M[side].score += pts;
     shooter.box.pts += pts;
-    M.players.forEach(p => { p.box.pm += p.side === shooter.side ? pts : -pts; });
+    M.players.forEach(p => { p.box.pm += p.side === side ? pts : -pts; });
     syncScoreboard();
     flash(`${pts} PUNKTE`);
+    momentum(side, pts);
+  }
+
+  // Runs, the building, and the coach who wants a run stopped (#50)
+  function momentum(side, pts) {
+    if (M.run.side === side) M.run.pts += pts; else M.run = { side, pts };
+    M.crowd = clamp(M.crowd + (side === 'home' ? 0.05 : -0.035) * pts / 2, 0, 1);
+    const run = M.run.pts;
+    const crossed = [8, 12, 16, 20, 25].find(m => run >= m && run - pts < m);
+    if (!crossed) return;
+    say(`${run}:0-Lauf ${M[side].name}`, side === 'home' ? 'player' : 'opponent');
+    if (side === 'home' && run >= 12) flash('DIE HALLE KOCHT');
+    const opp = other(side);
+    if (M[opp].timeouts > 0 && M.clock > 15 && !M.pendingTimeout && (run >= 12 || random() < 0.6)) {
+      M.pendingTimeout = { side: opp, why: 'den Lauf stoppen' };
+    }
   }
 
   // ── Fouls and free throws ─────────────────────────
   function foul(defender, victim, shots, andOne) {
+    const team = M[defender.side];
     defender.box.pf++;
-    M[defender.side].fouls++;
+    team.fouls++;
+    const endgame = M.quarter >= RULES.quarters && M.clock < 120;
+    if (endgame) team.lateFouls++;
     say(`Foul ${defender.name}${andOne ? ' — And-One!' : ''}`, defender.side === 'home' ? 'opponent' : 'player');
     if (defender.box.pf >= RULES.foulOut) foulOut(defender);
     if (shots > 0) return startFreeThrows(victim, shots);
-    // Non-shooting foul: bonus or side-out
-    if (M[defender.side].fouls > RULES.bonusAt) return startFreeThrows(victim, 2);
+    // Non-shooting foul: bonus or side-out. In the last two minutes the second
+    // team foul already sends the victim to the line, as in the NBA.
+    if (team.fouls > RULES.bonusAt || (endgame && team.lateFouls >= 2)) return startFreeThrows(victim, 2);
     turnover(victim.side, { keepClock: true });
   }
 
@@ -1020,7 +1230,7 @@ export const BasketballEngine = (() => {
       if (ft.left > 0) { M.ft = { ...ft, wait: s.human && !M.autoHuman ? 99 : 1.0, meter: 0, dir: 1, locked: false }; return; }
       M.ft = null;
       M.phase = 'live';
-      if (made) return deadBall(other(s.side));
+      if (made) return deadBall(other(s.side), { madeBasket: true });
       // live ball off the last miss
       const hoop = attackHoop(s.side);
       M.ball = {
@@ -1073,12 +1283,15 @@ export const BasketballEngine = (() => {
       let why = null;
       const stint = (M.gameTime - (p.stintStart || 0)) / 60 * pace();
       if (p.stamina < 0.45) why = 'müde';
-      else if (stint > (p.starter ? 10.5 : 7) && !(p.human && humanForm(p) === 'hot')) why = 'Verschnaufpause';
+      // a hot human earns a longer run, but with the clock stopping so often nobody plays the whole game
+      else if (stint > (p.starter ? (p.human && humanForm(p) === 'hot' ? 14 : 10.5) : 7)) why = 'Verschnaufpause';
       else if (p.fouls >= foulLimit && p.fouls < RULES.foulOut) why = 'Foulgefahr';
       else if (lateBlowout && p.starter) why = 'Spiel entschieden';
       else if (p.box.fga >= 7 && p.box.fgm / p.box.fga < 0.22 && p.stamina < 0.8) why = 'kalt';
       if (!why) return;
-      const rested = benchFor(p.role).filter(q => q.stamina >= 0.55).sort((a, b) => b.stamina - a.stamina)[0];
+      // his own backup first; when that spot is gone (foul-outs), anyone rested rather than a 46-minute night
+      const rested = benchFor(p.role).filter(q => q.stamina >= 0.55).sort((a, b) => b.stamina - a.stamina)[0]
+        || (stint > 13 ? team.roster.filter(q => !q.onCourt && !q.out && q.stamina >= 0.7).sort((a, b) => b.stamina - a.stamina)[0] : null);
       if (rested) substitute(team, p, rested, why);
     });
     // 2. who comes back: a rested starter for the bench man in his spot
@@ -1086,18 +1299,220 @@ export const BasketballEngine = (() => {
       const need = st.human ? { cold: 0.92, ok: 0.82, hot: 0.7 }[humanForm(st)] : 0.8;
       if (st.stamina < need) return;
       if (lateBlowout) return;
-      const onCourt = team.players.find(q => q.role === st.role && !q.starter);
+      const onCourt = team.players.find(q => q.role === st.role && !q.starter)
+        || team.players.find(q => !q.starter && q.stamina < st.stamina - 0.15);
       if (onCourt) substitute(team, onCourt, st, 'zurück');
     });
   }
 
-  function deadBall(toSide) {
+  function deadBall(toSide, { madeBasket = false, spot = null, pause = RULES.inbound } = {}) {
     if (!M || M.phase === 'finished') return;
+    M.inbound = null; M.charge = null;
     M.phase = 'dead';
-    M.deadUntil = RULES.inbound;
+    // The period ended on this whistle: no inbound, the horn after a beat
+    if (M.clock <= 0) { M.deadUntil = 0.6; M.next = null; return; }
+    M.deadUntil = pause;
     M.shotClock = RULES.shotClock;
+    M.possession = toSide;
+    M.next = { side: toSide, spot: spot || inboundSpot(toSide, madeBasket) };
+    // A coach who asked for time gets it now; trailing late, a coach spends one to advance the ball
+    const pend = M.pendingTimeout;
+    M.pendingTimeout = null;
+    if (pend && callTimeout(pend.side, pend.why)) return;
+    if (wantsLateTimeout(toSide) && callTimeout(toSide, 'Ball vorverlegen')) return;
     coach(M.home); coach(M.away);
-    resetPositions(toSide);
+    placeForInbound(M.next);
+  }
+
+  // ── Inbounds (#50) ────────────────────────────────
+  // Where the ball comes back in: under the basket after a score, else the nearest sideline
+  function inboundSpot(side, madeBasket) {
+    if (madeBasket) {
+      const dh = defendHoop(side);
+      return { x: dh.baseline + dh.dir * 1.2, y: MID + rnd(-6, 6), baseline: true };
+    }
+    const b = M.ball;
+    return { x: clamp(b.x, 6, COURT.length - 6), y: b.y < MID ? 1.2 : COURT.width - 1.2, baseline: false };
+  }
+  // After a late timeout the ball is advanced to the frontcourt hash, as in the NBA's last two minutes
+  function advancedSpot(side) {
+    const ah = attackHoop(side);
+    const y = (M.ball?.y ?? MID) < MID ? 1.2 : COURT.width - 1.2;
+    return { x: ah.baseline - ah.dir * 28, y, baseline: false };
+  }
+
+  function wantsLateTimeout(side) {
+    if (M.quarter < RULES.quarters) return false;
+    const margin = M[other(side)].score - M[side].score;
+    return margin > 0 && margin <= 6 && M.clock < 35 && M.clock > 2 && M[side].timeouts > 0;
+  }
+
+  // The pieces for an inbound: the passer on the line, four men working to get open, the defence matched up
+  function placeForInbound(next) {
+    const side = next.side, off = M[side], def = M[other(side)];
+    const ah = attackHoop(side);
+    const spot = next.spot;
+    // a big inbounds from the baseline, a wing from the sideline; the human is spared the chore
+    const prefer = spot.baseline ? ['PF', 'C', 'SF', 'SG', 'PG'] : ['SF', 'SG', 'PF', 'PG', 'C'];
+    const inbounder = prefer.map(r => off.players.find(p => p.role === r && (!p.human || M.autoHuman))).find(Boolean) || off.players[0];
+    inbounder.x = spot.x; inbounder.y = spot.y; inbounder.vx = inbounder.vy = 0; inbounder.paint = 0;
+    const up = spot.baseline ? defendHoop(side).dir : 0;
+    const inward = spot.y < MID ? 1 : -1;
+    const toHoop = Math.sign(ah.x - spot.x) || 1;
+    const form = spot.baseline
+      ? [{ dx: 8, dy: -8 }, { dx: 12, dy: 9 }, { dx: 19, dy: -2 }, { dx: 32, dy: 10 }]
+      : [{ dx: -8, dy: 9 }, { dx: 8, dy: 9 }, { dx: 1, dy: 20 }, { dx: toHoop * 16, dy: 14 }];
+    off.players.filter(p => p !== inbounder).forEach((p, i) => {
+      const f = form[i] || form[0];
+      p.x = clamp(spot.x + (spot.baseline ? up * f.dx : f.dx), 3, COURT.length - 3);
+      p.y = clamp(spot.baseline ? spot.y + f.dy : spot.y + inward * f.dy, 3, COURT.width - 3);
+      p.vx = p.vy = 0; p.paint = 0;
+    });
+    const dh = defendHoop(def.side);
+    const men = matchups(def, off);
+    def.players.forEach(p => {
+      const man = men.get(p) || off.players[0];
+      const t = towards(man, dh, man === inbounder ? 3 : 4.5);
+      p.x = clamp(t.x, 2, COURT.length - 2); p.y = clamp(t.y, 2, COURT.width - 2); p.vx = p.vy = 0; p.paint = 0;
+    });
+    M.ball = { x: inbounder.x, y: inbounder.y, z: 0, vx: 0, vy: 0, holder: inbounder, state: 'held', shot: null };
+    inbounder.catchAt = M.gameTime;
+    inbounder.dribbleFrom = { x: inbounder.x, y: inbounder.y };
+    M.possession = side;
+    M.lastPass = null;
+    M.backcourtT = 0;
+    next.inbounder = inbounder;
+  }
+
+  function updateInbound(dt) {
+    const ib = M.inbound;
+    tickStamina(dt, true);
+    ib.count -= dt;
+    if (M.ball.state === 'held') {
+      const p = ib.inbounder;
+      inboundOffense(dt);
+      defend(dt);
+      movePlayers(dt, false);
+      if (ib.count <= 0) {
+        say(`5 Sekunden — ${p.name}`, p.side === 'home' ? 'opponent' : 'player');
+        p.box.tov++; M.stats.fiveSeconds++;
+        return turnover(other(p.side));
+      }
+      const auto = !p.human || M.autoHuman;
+      const open = openReceiver(p);
+      if (auto ? (ib.count < RULES.inboundCount - 0.7 && (open.score > 3.5 || ib.count < 1.6)) : ib.count < 0.8) inboundPass(p, open.player);
+      updateBall(dt);
+    } else {
+      // the pass is in the air
+      defend(dt);
+      movePlayers(dt, true);
+      updateBall(dt);
+    }
+    syncScoreboard();
+  }
+
+  // The most open teammate, less the exposure of the pass to him
+  function openReceiver(from) {
+    let best = { player: null, score: -Infinity };
+    M[from.side].players.forEach(t => {
+      if (t === from) return;
+      // the ball is walked up: a long outlet only when it is clearly the safer pass
+      let s = dist(t, nearestOpp(t)) - passLaneRisk(from, t) * 8 - Math.max(0, dist(from, t) - 16) * 0.25;
+      if (t.human && M.callForBall && M.gameTime - M.callForBall < 1.5) s += 3;
+      if (M.setPlay?.side === from.side && t === M.setPlay.target) s += 2;
+      if (s > best.score) best = { player: t, score: s };
+    });
+    return best;
+  }
+
+  function inboundPass(from, to) {
+    if (!M || M.phase !== 'inbound' || M.ball.holder !== from) return;
+    const target = to || openReceiver(from).player;
+    if (target) passTo(from, target);
+  }
+
+  // Receivers shake their man; the shooter of a set play goes to his spot
+  function inboundOffense(dt) {
+    const ib = M.inbound, off = M[ib.side];
+    const play = M.setPlay?.side === ib.side ? M.setPlay : null;
+    off.players.forEach(p => {
+      if (p === ib.inbounder || (p.human && !M.autoHuman)) return;
+      if (play && p === play.target) return steer(p, play.spot, 0.9, dt);
+      const mark = nearestOpp(p);
+      const t = { x: p.x + (p.x - mark.x) * 0.8 + Math.sin(ib.count * 2 + p.number) * 3, y: p.y + (p.y - mark.y) * 0.8 };
+      steer(p, { x: clamp(t.x, 3, COURT.length - 3), y: clamp(t.y, 3, COURT.width - 3) }, 0.6, dt);
+    });
+  }
+
+  // ── Timeouts (#50) ────────────────────────────────
+  function canCallTimeout(side) {
+    if (!M || ['finished', 'timeout', 'freethrow'].includes(M.phase)) return false;
+    const team = M[side];
+    if (team.timeouts <= 0) return false;
+    if (M.quarter >= RULES.quarters && M.clock < 180 && team.lateTimeouts >= RULES.lateTimeouts) return false;
+    if (M.phase === 'live') return M.ball.state === 'held' && M.ball.holder?.side === side;
+    if (M.phase === 'inbound') return M.inbound.side === side;
+    return M.clock > 0;   // dead ball: either bench, but not after the horn
+  }
+
+  function callTimeout(side, why) {
+    if (!canCallTimeout(side)) return false;
+    const team = M[side];
+    team.timeouts--;
+    if (M.quarter >= RULES.quarters && M.clock < 180) team.lateTimeouts++;
+    M.stats.timeouts[side]++;
+    M.pendingTimeout = null;
+    M.charge = null;
+    const spot = M.next?.spot || M.inbound?.spot || inboundSpot(M.possession, false);
+    M.timeout = { side, why, left: RULES.timeoutPause, spot, advance: M.quarter >= RULES.quarters && M.clock < 120 };
+    M.next = null; M.inbound = null;
+    M.phase = 'timeout';
+    M.shotClock = Math.max(M.shotClock, RULES.shotClockOreb);
+    M.players.forEach(p => { p.stamina = Math.min(1, p.stamina + 0.03); });   // a breather for the ten on the floor
+    say(`Auszeit ${team.name}${why ? ` — ${why}` : ''}`, side === 'home' ? 'player' : 'opponent');
+    flash('AUSZEIT');
+    syncScoreboard();
+    return true;
+  }
+
+  // The human's bench (T, or the button): honoured when the rules allow it
+  function requestTimeout() {
+    if (!M || M.phase === 'finished') return false;
+    const ok = callTimeout('home', 'auf Wunsch der Bank');
+    if (!ok) flash(M.home.timeouts <= 0 ? 'KEINE AUSZEIT MEHR' : 'JETZT KEINE AUSZEIT');
+    return ok;
+  }
+
+  function updateTimeout(dt) {
+    const t = M.timeout;
+    t.left -= dt;
+    tickStamina(dt, true);
+    M.players.forEach(p => { p.vx *= 0.8; p.vy *= 0.8; });
+    if (t.left > 0) return;
+    M.timeout = null;
+    coach(M.home); coach(M.away);
+    const side = M.possession;
+    M.setPlay = designPlay(side);
+    M.next = { side, spot: t.advance ? advancedSpot(side) : t.spot };
+    placeForInbound(M.next);
+    M.phase = 'dead';
+    M.deadUntil = RULES.inbound * 0.5;
+    syncScoreboard();
+  }
+
+  // Out of the huddle: a screen for the best shooter on the floor
+  function designPlay(side) {
+    const team = M[side];
+    let target = team.players.slice().sort((a, b) => b.ratings.three - a.ratings.three)[0];
+    const h = team.players.find(p => p.human);
+    if (h && h.ratings.three >= target.ratings.three - 8) target = h;   // the human's moment when he can shoot
+    const screener = team.players.find(p => p.role === (target.role === 'C' ? 'PF' : 'C') && p !== target) || team.players.find(p => p !== target);
+    const ah = attackHoop(side);
+    const wingY = (M.ball?.y ?? MID) < MID ? MID + 13 : MID - 13;   // the wing away from the ball
+    const spot = { x: ah.x + ah.dir * Math.sqrt(23.2 ** 2 - 13 ** 2), y: wingY };
+    M.stats.setPlays++;
+    say(`Spielzug: ${screener.name} blockt für ${target.name}`, side === 'home' ? 'player' : 'opponent');
+    return { side, target, screener, spot, left: 8, touched: false };
   }
 
   function recordQuarterShooting() {
@@ -1122,10 +1537,26 @@ export const BasketballEngine = (() => {
     if (M.quarter === 3) say('Seitenwechsel', 'neutral');
     M.phase = 'dead';
     M.deadUntil = RULES.inbound * 2;
+    M.inbound = null; M.setPlay = null; M.pendingTimeout = null; M.timeout = null;
+    M.home.lateFouls = 0; M.away.lateFouls = 0;
+    M.run = { side: null, pts: 0 };
     // the break: everyone gets some legs back, then the coach sets the five
     ['home', 'away'].forEach(sd => M[sd].roster.forEach(p => { p.stamina = Math.min(1, p.stamina + (M.quarter === 3 ? 0.18 : 0.08)); }));
     coach(M.home); coach(M.away);
-    resetPositions(random() < 0.5 ? 'home' : 'away', { tip: M.quarter > RULES.quarters });
+    if (M.quarter > RULES.quarters) {
+      // overtime: a jump ball, and two timeouts a side
+      M.home.timeouts = RULES.otTimeouts; M.away.timeouts = RULES.otTimeouts;
+      M.home.lateTimeouts = 0; M.away.lateTimeouts = 0;
+      M.next = null;
+      resetPositions(random() < 0.5 ? 'home' : 'away', { tip: true });
+    } else {
+      // possession alternates from the opening tip: the second and fourth quarters to the team that lost it
+      const side = M.quarter === 3 ? M.tipWinner : other(M.tipWinner);
+      const dh = defendHoop(side);
+      M.possession = side;
+      M.next = { side, spot: { x: dh.baseline + dh.dir * 1.2, y: MID, baseline: true } };
+      placeForInbound(M.next);
+    }
     syncScoreboard();
   }
 
@@ -1338,6 +1769,28 @@ export const BasketballEngine = (() => {
       ctx.fillStyle = '#ffd166'; ctx.font = '800 12px system-ui'; ctx.textAlign = 'center';
       ctx.fillText(`AUF DER BANK — ${humanForm(h) === 'cold' ? 'der Coach ist nicht zufrieden' : humanForm(h) === 'hot' ? 'kurze Pause' : 'Kraft tanken'}`, m.w / 2, 27);
     }
+    // the huddle (#50)
+    if (M.phase === 'timeout' && M.timeout) {
+      ctx.fillStyle = 'rgba(10,14,18,.82)'; ctx.fillRect(m.w / 2 - 170, m.h / 2 - 30, 340, 60);
+      ctx.fillStyle = '#ffd166'; ctx.font = '800 16px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(`AUSZEIT ${M[M.timeout.side].name.toUpperCase()}`, m.w / 2, m.h / 2 - 8);
+      ctx.fillStyle = '#eef3f7'; ctx.font = '600 11px system-ui';
+      ctx.fillText(M.timeout.why || '', m.w / 2, m.h / 2 + 12);
+    }
+    // the five-second count on the inbounder
+    if (M.phase === 'inbound' && M.inbound && M.ball.state === 'held') {
+      const ib = M.inbound, mine = ib.inbounder.human && !M.autoHuman;
+      label(ctx, m, ib.inbounder, `${mine ? 'E: Einwurf' : 'Einwurf'} ${Math.max(0, ib.count).toFixed(1)}`);
+    }
+    if (M.setPlay && M.setPlay.left > 4 && M.phase !== 'timeout') label(ctx, m, M.setPlay.target, M.setPlay.target.human ? 'DEIN SPIELZUG' : 'SPIELZUG');
+    // the building: momentum, bottom right; timeouts left above it
+    ctx.fillStyle = 'rgba(6,10,14,.7)'; ctx.fillRect(m.w - 142, m.h - 26, 130, 16);
+    ctx.fillStyle = M.crowd > 0.7 ? '#ef7d2e' : M.crowd < 0.3 ? '#6b7c93' : '#dfff53';
+    ctx.fillRect(m.w - 140, m.h - 24, 126 * clamp(M.crowd, 0, 1), 12);
+    ctx.fillStyle = '#eef3f7'; ctx.font = '700 9px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(`HALLE${M.run.pts >= 8 ? `  ${M.run.pts}:0-LAUF ${M.run.side === 'home' ? 'FÜR UNS' : 'GEGEN UNS'}` : ''}`, m.w - 136, m.h - 18);
+    ctx.textAlign = 'right'; ctx.fillStyle = 'rgba(238,243,247,.8)';
+    ctx.fillText(`T: AUSZEIT (${M.home.timeouts})`, m.w - 12, m.h - 36);
     if (M.fastForward) {
       ctx.fillStyle = 'rgba(10,14,18,.72)';
       ctx.fillRect(m.w / 2 - 96, 10, 192, 26);
@@ -1379,6 +1832,8 @@ export const BasketballEngine = (() => {
     set('bb-quarter', M.quarter > RULES.quarters ? `OT${M.quarter - RULES.quarters}` : `Q${M.quarter}`);
     set('bb-home-fouls', `${M.home.fouls}${M.home.fouls > RULES.bonusAt ? ' • BONUS' : ''}`);
     set('bb-away-fouls', `${M.away.fouls}${M.away.fouls > RULES.bonusAt ? ' • BONUS' : ''}`);
+    set('bb-home-to', M.home.timeouts);
+    set('bb-away-to', M.away.timeouts);
   }
 
   function say(text, type = 'neutral') {
@@ -1423,5 +1878,5 @@ export const BasketballEngine = (() => {
     drawBall(ctx, m, { x: spots.PG.x + 1.6, y: spots.PG.y, z: 1.4 });
   }
 
-  return { start, abort, isRunning, preview, RULES, ROLES, ROLE_BY_LABEL };
+  return { start, abort, isRunning, preview, requestTimeout, RULES, ROLES, ROLE_BY_LABEL };
 })();

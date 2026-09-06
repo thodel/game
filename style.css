@@ -363,6 +363,8 @@ body {
 .bb-tick.player { border-left-color: var(--basketball, #ef7d2e); }
 .bb-tick.opponent { border-left-color: var(--danger); }
 .bb-touch-pass { width: 72px; height: 72px; margin-bottom: 24px; background: rgba(66,103,214,.7); }
+.bb-touch-to { width: 50px; height: 50px; margin-bottom: 44px; background: rgba(255,209,102,.55); font-size: .66rem; }
+.bb-to-btn { margin-top: 4px; padding: 3px 9px; font-size: .62rem; }
 
 /* Box score */
 .bb-box { margin: 14px 0; text-align: left; }
