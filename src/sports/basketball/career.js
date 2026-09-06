@@ -8,7 +8,7 @@ import { clamp, avgStat, fmt } from '../../core/utils.js';
 import { checkAchievements, showAchievement } from '../../core/achievements.js';
 import { SeasonEngine }      from './season.js';
 import { BasketballEngine }  from './engine.js';
-import { basketballAdapter, getLeagueLeaders, initLeagueRoster, makeRoster, ensureHumanSlot, applyBoxToRoster, settleLeagueBoxes } from './index.js';
+import { basketballAdapter, getLeagueLeaders, initLeagueRoster, makeRoster, ensureHumanSlot, applyBoxToRoster, settleLeagueBoxes, rosterStrengthFor } from './index.js';
 import { generatePlayByPlay, generateQuarterScores } from '../../ui/commentary.js';
 import { createRNG, matchSeed } from '../../core/rng.js';
 
@@ -335,7 +335,7 @@ export function startMatch(state, App) {
   // Persistent rosters (#51): the league's men, the same every night, on the live engine's scale
   const oppName = pendingGame?.opponent || 'Gegner';
   if (!state.league?.teams?.[c.teamName]) initLeagueRoster(state, basketballAdapter, state._rng);
-  if (!state.league.teams[oppName]) state.league.teams[oppName] = { roster: makeRoster(state._rng, clamp(50 + rnd(state._rng, -15, 15), 30, 75)), w: 0, l: 0, pts: 0 };
+  if (!state.league.teams[oppName]) state.league.teams[oppName] = { roster: makeRoster(state._rng, rosterStrengthFor(state, oppName, state._rng)), w: 0, l: 0, pts: 0 };
   ensureHumanSlot(state);
   const onLiveScale = roster => roster.map(pl => ({ ...pl, rating: clamp(Math.round(pl.rating + level - 50), 30, 97) }));
   BasketballEngine.start({

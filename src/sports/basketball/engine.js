@@ -142,6 +142,7 @@ export const BasketballEngine = (() => {
     if (roster && roster.length >= 10) {
       // the club's own men, the same every night; the human takes his slot among the starters
       const humanP = humanSpec ? makePlayer(side, humanRole, humanSpec.name, humanSpec.number || ROLES[humanRole].n, humanSpec.ratings, true) : null;
+      if (humanP && humanSpec.tendency) humanP.tendency = { ...DEFAULT_TENDENCY, ...humanSpec.tendency };
       let placed = false;
       roster.slice(0, 5).forEach(pl => {
         const mine = humanP && !placed && (pl.human || pl.position === humanRole);
@@ -277,6 +278,8 @@ export const BasketballEngine = (() => {
     M.pnr = null;
     M.possStart = { at: 0, origin: 'dead' };
     M.noRotations = !!opts.noRotations;      // tests: measure fatigue with nobody resting
+    M.noHumanBias = !!opts.noHumanBias;      // tests: the human is treated like any other player
+    if (opts.swapOrder) M.players.reverse();  // tests: away players first in every loop
     M.noFatigue = !!opts.noFatigue;          // tests: isolate the fatigue effect
     M.stats = { passes: 0, deflect: 0, timeouts: { home: 0, away: 0 }, inbounds: 0, fiveSeconds: 0, backcourt: 0,
                 intentionalFouls: 0, intentionalByQ: {}, lastSecondShots: 0, screens: 0, fastBreaks: 0, doubles: 0, humanTouches: 0, buzzerBeaters: 0, setPlays: 0, setPlayTouches: 0, setPlayShots: 0 };
@@ -565,21 +568,29 @@ export const BasketballEngine = (() => {
     const h = M.human;
     const pinned = M.inbound?.inbounder || null;   // the inbounder stays on the line
     if (!idle && !M.autoHuman && !h.benched && h.onCourt && h !== pinned) humanSteer(h, dt);
+    // Separation, so bodies do not stack — each pair resolved once with both bodies
+    // moving. Resolving it inside the per-player loop moved the first-processed
+    // player by the full half-overlap and the later one by the remainder, and let
+    // the first team move before the second reacted: the team listed first lost
+    // every rebound scramble and fouled 40% more, a hidden six points a game (#59).
+    const P = M.players;
+    for (let i = 0; i < P.length; i++) {
+      for (let j = i + 1; j < P.length; j++) {
+        const p = P[i], q = P[j];
+        const d = dist(p, q);
+        if (d < p.r + q.r && d > 0.001) {
+          const push = (p.r + q.r - d) / 2, ux = (p.x - q.x) / d, uy = (p.y - q.y) / d;
+          p.x += ux * push; p.y += uy * push;
+          q.x -= ux * push; q.y -= uy * push;
+        }
+      }
+    }
     M.players.forEach(p => {
       if (p === pinned) { p.vx = p.vy = 0; }
       p.cooldown = Math.max(0, p.cooldown - dt);
       p.jump = Math.max(0, p.jump - dt);
       p.slowed = Math.max(0, p.slowed - dt);
       if (idle) { p.vx *= 0.86; p.vy *= 0.86; }
-      // separation, so bodies do not stack
-      M.players.forEach(q => {
-        if (q === p) return;
-        const d = dist(p, q);
-        if (d < p.r + q.r && d > 0.001) {
-          const push = (p.r + q.r - d) / 2;
-          p.x += (p.x - q.x) / d * push; p.y += (p.y - q.y) / d * push;
-        }
-      });
       const sp = Math.hypot(p.vx, p.vy);
       if (sp > 4) { p.facing = Math.atan2(p.vy, p.vx); p.stride += dt * sp * 0.9; }
       p.x = clamp(p.x + p.vx * dt, p.r, COURT.length - p.r);
@@ -817,7 +828,7 @@ export const BasketballEngine = (() => {
       const share = teamShots > 12 ? p.box.fga / teamShots : 0.2;
       const hog = Math.max(0, share - (p.star ? 0.34 : 0.27)) * 2.2;   // a star is allowed his usage
       // ... and a man who has hardly shot gets a green light — nobody on the floor is decoration (#28)
-      const starved = teamShots > 12 ? Math.max(0, (p.human ? 0.15 : 0.09) - share) * (p.human ? 3.0 : 1.8) : 0;
+      const starved = teamShots > 12 ? Math.max(0, 0.09 - share) * (p.human && !M.noHumanBias ? 2.4 : 1.8) : 0;
       const tend = p.tendency || DEFAULT_TENDENCY;
       const desperate = effClock < 3.0;
       // A good look inside is worth taking even when a three grades higher on paper
@@ -833,6 +844,8 @@ export const BasketballEngine = (() => {
       const lastShot = M.clock < RULES.shotClock + 4 && M.clock > 7 && !(late && margin < 0);
       if (lastShot) bar += 0.5;                              // hold for the last shot of the period
       if (late && margin > 0 && M.clock > 6) bar += 0.3;     // ahead: milk the clock
+      // ... and a team well in front coasts through the fourth: nothing forced, the clock used (#59)
+      if (M.quarter >= RULES.quarters && margin >= 12 && M.clock < RULES.quarterMinutes * 60 * 0.6) bar += 0.25;
       if (late && margin < 0) bar -= 0.25;                    // behind: hunt a shot
       const needThree = late && margin <= -3 && M.clock < 15 && val === 2 && d > 4;
       // The play drawn up in the huddle: everyone else waits for the shooter's look
@@ -862,6 +875,14 @@ export const BasketballEngine = (() => {
       if (help >= 2 && M.shotClock > 3.5) {
         const kick = bestPass(p);
         if (kick && kick.ev > 0.85) { p.driving = false; return passTo(p, kick.player); }
+      }
+      // A man square in the path is driven around, not into (bodies no longer give way — #59)
+      const ahead = towards(p, hoop, Math.min(3.5, d));
+      if (dist(def, ahead) < 2.4 && dd < 4) {
+        const side = (p.y - def.y) * (hoop.x - p.x) >= 0 ? 1 : -1;
+        const perp = { x: -(hoop.y - p.y), y: hoop.x - p.x };
+        const len = Math.hypot(perp.x, perp.y) || 1;
+        return steer(p, { x: hoop.x + perp.x / len * side * 5, y: clamp(hoop.y + perp.y / len * side * 5, 3, COURT.width - 3) }, 1, dt);
       }
       return steer(p, hoop, 1, dt);
     }
@@ -898,11 +919,14 @@ export const BasketballEngine = (() => {
       // Team-mates feed the human at a rate that fits his role and his game (#28): a guard
       // sees more of the ball than a centre, a better scorer more than a worse one — and
       // nobody is frozen out for half a quarter
-      if (t.human) {
-        const usage = { PG: 0.10, SG: 0.08, SF: 0.06, PF: 0.03, C: 0.02 }[t.role] || 0.05;
+      if (t.human && !M.noHumanBias) {
+        // a guard's share of the ball, scaled by how he is actually shooting against his team-mates:
+        // a weak human is not turned into a bad volume shooter, a hot one gets fed
+        const usage = { PG: 0.09, SG: 0.07, SF: 0.05, PF: 0.03, C: 0.02 }[t.role] || 0.04;
         const mine = (t.ratings.three + t.ratings.rim + t.ratings.handle) / 3;
         const team = M[p.side].players.reduce((a, q) => a + (q.ratings.three + q.ratings.rim + q.ratings.handle) / 3, 0) / M[p.side].players.length;
-        ev += usage + clamp((mine - team) / 100 * 0.5, -0.12, 0.14);
+        const fg = t.box.fga >= 6 ? t.box.fgm / t.box.fga - 0.44 : 0;
+        ev += usage + clamp((mine - team) / 100 * 0.6 + fg * 0.5, -0.15, 0.14);
         if (M.gameTime - Math.max(0, t.catchAt) > 30) ev += 0.3;
       }
       const teamShots = M[p.side].players.reduce((a, q) => a + q.box.fga, 0);
@@ -989,8 +1013,8 @@ export const BasketballEngine = (() => {
       const rim = attackHoop(p.side);
       if (live && dist(p, rim) < 11 && Math.hypot(p.vx, p.vy) > p.maxSpeed * 0.4) {
         for (const q of M.players) {
-          if (q.side === p.side || dist(q, p) > 2.2 || q.cooldown > 0) continue;
-          if (random() < 0.40 * dt * (q.box.pf >= 4 ? 0.5 : 1)) { q.cooldown = 1.2; foul(q, p, 0, false); return; }   // foul trouble: play it softer
+          if (q.side === p.side || dist(q, p) > 2.6 || q.cooldown > 0) continue;   // a reach, not just a body
+          if (random() < 0.45 * dt * (q.box.pf >= 4 ? 0.5 : 1)) { q.cooldown = 1.2; foul(q, p, 0, false); return; }   // foul trouble: play it softer
         }
       }
       const bob = Math.sin(M.gameTime * 9) * 0.5;
@@ -1083,12 +1107,12 @@ export const BasketballEngine = (() => {
       M.players.forEach(q => {
         const d = dist(q, b);
         if (d > q.r + 1.6 || q.cooldown > 0) return;
-        const inside = b.rebound && q.side !== b.rebound.offSide ? 0.10 : 0;
+        const inside = b.rebound && q.side !== b.rebound.offSide ? 0.08 : 0;
         // Box out (#28): an attacker with a defender on his body between him and the ball loses the scramble
         let boxed = 0;
         if (b.rebound && q.side === b.rebound.offSide) {
           const blocker = M.players.find(o => o.side !== q.side && dist(o, q) < 3.2 && dist(o, b) < d);
-          if (blocker) boxed = 0.15 * M.difficulty * (0.6 + blocker.ratings.reb / 250);
+          if (blocker) boxed = 0.06 * M.difficulty * (0.6 + blocker.ratings.reb / 250);
         }
         const score = q.ratings.reb / 100 + inside + random() * 0.6 - d * 0.15 - boxed;
         if (score > bestScore) { bestScore = score; claim = q; }
@@ -1156,13 +1180,13 @@ export const BasketballEngine = (() => {
 
     const blocked = def.jump > 0 && dd < 4.0 &&
       random() < clamp(0.14 + (def.ratings.defense - 55) / 500 + (d < 6 ? 0.07 : 0), 0.02, 0.34);
-    const fouled = !blocked && dd < 3.0 &&
+    const fouled = !blocked && dd < 3.3 &&
       random() < 0.14 + (def.jump > 0 ? 0.11 : 0) + (d < 6 ? 0.13 : 0);
     const made = !blocked && random() < p;
 
     shooter.box.fga++;
     if (val === 3) shooter.box.tpa++;
-    if (M.opts.trace) (M.stats.shots ||= []).push({ q: M.quarter, clock: Math.round(M.clock), side: shooter.side, role: shooter.role, d: Math.round(d), dd: Math.round(dd * 10) / 10, why, made });
+    if (M.opts.trace) (M.stats.shots ||= []).push({ q: M.quarter, clock: Math.round(M.clock), side: shooter.side, role: shooter.role, d: Math.round(d), dd: Math.round(dd * 10) / 10, why, made, lead: M[shooter.side].score - M[other(shooter.side)].score, three: val === 3, fouled: false });
     if (M.clock < 4) M.stats.lastSecondShots++;
     const onBreak = M.possStart.origin === 'live' && M.gameTime - M.possStart.at < 6 && d < 12;
     if (onBreak) M.stats.fastBreaks++;
@@ -1385,8 +1409,12 @@ export const BasketballEngine = (() => {
   // The coach looks at the floor at every stoppage (#48).
   function coach(team) {
     if (M.noRotations) return;
-    const margin = Math.abs(M.home.score - M.away.score);
-    const lateBlowout = M.quarter >= RULES.quarters && margin >= 20 && M.clock < RULES.quarterMinutes * 60 * 0.6;
+    // Garbage time is asymmetric (#59): the coach in front protects his starters early,
+    // the coach behind keeps his until it is hopeless — trailing starters against a leading
+    // bench is what pulls real margins back in
+    const lead = M[team.side].score - M[other(team.side)].score;
+    const late = M.quarter >= RULES.quarters && M.clock < RULES.quarterMinutes * 60 * 0.6;
+    const lateBlowout = late && (lead >= 15 || lead <= -25);
     const foulLimit = M.quarter < RULES.quarters ? 4 : 5;
     const benchFor = role => team.roster.filter(p => !p.onCourt && !p.out && p.role === role);
     // 1. who has to come off
@@ -1395,7 +1423,7 @@ export const BasketballEngine = (() => {
       const stint = (M.gameTime - (p.stintStart || 0)) / 60 * pace();
       if (p.stamina < 0.45) why = 'müde';
       // a hot human earns a longer run, but with the clock stopping so often nobody plays the whole game
-      else if (stint > (p.starter ? (p.human && humanForm(p) === 'hot' ? 14 : 10.5) : 7)) why = 'Verschnaufpause';
+      else if (stint > (p.starter ? (p.human && !M.noHumanBias && humanForm(p) === 'hot' ? 14 : 10.5) : 7)) why = 'Verschnaufpause';
       else if (p.fouls >= foulLimit && p.fouls < RULES.foulOut) why = 'Foulgefahr';
       else if (lateBlowout && p.starter) why = 'Spiel entschieden';
       else if (p.box.fga >= 7 && p.box.fgm / p.box.fga < 0.22 && p.stamina < 0.8) why = 'kalt';
@@ -1407,7 +1435,7 @@ export const BasketballEngine = (() => {
     });
     // 2. who comes back: a rested starter for the bench man in his spot
     team.roster.filter(p => p.starter && !p.onCourt && !p.out).forEach(st => {
-      const need = st.human ? { cold: 0.92, ok: 0.82, hot: 0.7 }[humanForm(st)] : 0.8;
+      const need = st.human && !M.noHumanBias ? { cold: 0.92, ok: 0.82, hot: 0.7 }[humanForm(st)] : 0.8;
       if (st.stamina < need) return;
       if (lateBlowout) return;
       const onCourt = team.players.find(q => q.role === st.role && !q.starter)
@@ -1449,7 +1477,7 @@ export const BasketballEngine = (() => {
   function advancedSpot(side) {
     const ah = attackHoop(side);
     const y = (M.ball?.y ?? MID) < MID ? 1.2 : COURT.width - 1.2;
-    return { x: ah.baseline - ah.dir * 28, y, baseline: false };
+    return { x: ah.baseline + ah.dir * 28, y, baseline: false };   // 28 ft from the attacking baseline
   }
 
   function wantsLateTimeout(side) {
