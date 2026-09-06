@@ -136,6 +136,16 @@ export function applyBoxToRoster(roster, rows) {
   });
 }
 
+// A club's roster strength follows the season table when there is one (#59):
+// the club the standings call strong fields the strong men. The table rates
+// clubs 62-84 around 73; rosters sit around 50, and 0.6 of a table point per
+// rating point gives the best and worst clubs about a 20-point gap on the floor.
+export function rosterStrengthFor(state, teamName, rng) {
+  const row = state.career?.nba?.teams?.find?.(t => t.name === teamName);
+  if (row) return clamp(Math.round(50 + (row.strength - 73) * 0.6), 30, 75);
+  return clamp(50 + rng.randInt(-10, 10), 30, 75);
+}
+
 // ─── League roster initialiser (Epic #51) ────────────────────────────────────
 export function initLeagueRoster(state, adapter, rng) {
   if (!state.league) state.league = { teams: {}, season: 1 };
@@ -143,9 +153,8 @@ export function initLeagueRoster(state, adapter, rng) {
                    || adapter.teamsByLeague[1];
   leagueTeams.forEach(teamName => {
     if (!state.league.teams[teamName]) {
-      const strength = clamp(50 + rng.randInt(-15, 15), 30, 75);
       state.league.teams[teamName] = {
-        roster: makeRoster(rng, strength),
+        roster: makeRoster(rng, rosterStrengthFor(state, teamName, rng)),
         w: 0, l: 0, pts: 0,
       };
     }
@@ -332,8 +341,8 @@ export const basketballAdapter = {
     const isHome   = ctx.isHome !== false;
 
     if (!state.league) state.league = { teams: {}, season: c.season };
-    const teamFor = (name, strength) => {
-      if (!state.league.teams[name]) state.league.teams[name] = { roster: makeRoster(rng, strength), w: 0, l: 0, pts: 0 };
+    const teamFor = name => {
+      if (!state.league.teams[name]) state.league.teams[name] = { roster: makeRoster(rng, rosterStrengthFor(state, name, rng)), w: 0, l: 0, pts: 0 };
       return state.league.teams[name];
     };
     const leagueDiff       = c.leagueIndex * 8;
@@ -341,8 +350,8 @@ export const basketballAdapter = {
     // The player's club is a team, not one player: its strength comes from the
     // season when there is one, and the player's own line scales with skill below.
     const playerStrength   = ctx.homeStrength ?? clamp(skill + rng.randInt(-8, 8), 10, 100);
-    const homeRoster = teamFor(c.teamName, playerStrength).roster;   // your own team-mates persist too
-    const oppTeamData = teamFor(opponent, opponentStrength);
+    const homeRoster = teamFor(c.teamName).roster;   // your own team-mates persist too
+    const oppTeamData = teamFor(opponent);
     const oppRoster  = oppTeamData.roster;
 
     // Second night of a back-to-back: the season knows; fall back to the week heuristic
