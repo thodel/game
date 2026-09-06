@@ -342,6 +342,7 @@ export function startMatch(state, App) {
     canvasId: 'bb-canvas',
     rng: createRNG(matchSeed(state._saveSeed || 42, c.season, fixtureKey)),
     quarterMinutes,
+    difficulty: c.leagueIndex >= 1 ? 1 : 0.4,   // the G-League is a looser game (#28)
     backToBack: (pendingGame?.restDays ?? 1) === 0,
     home: { name: c.teamName, strength: clamp(level + rnd(state._rng, -4, 4), 35, 95), roster: onLiveScale(state.league.teams[c.teamName].roster) },
     away: { name: oppName, strength: clamp(level + rnd(state._rng, -6, 8), 35, 96), roster: onLiveScale(state.league.teams[oppName].roster) },

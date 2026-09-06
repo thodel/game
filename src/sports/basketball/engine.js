@@ -271,10 +271,15 @@ export const BasketballEngine = (() => {
     };
     // Tired legs shoot worse and run slower; the second night of a back-to-back starts lower
     M.human.stamina = clamp((0.80 + (opts.human.energy ?? 100) / 500) * (opts.backToBack ? 0.85 : 1), 0.5, 1);
+    // League difficulty (#28): 1 is the NBA — a defence that reads spacing, tight closeouts,
+    // clean passes, disciplined shots; lower leagues are looser on every count
+    M.difficulty = clamp(opts.difficulty ?? 1, 0, 1);
+    M.pnr = null;
+    M.possStart = { at: 0, origin: 'dead' };
     M.noRotations = !!opts.noRotations;      // tests: measure fatigue with nobody resting
     M.noFatigue = !!opts.noFatigue;          // tests: isolate the fatigue effect
     M.stats = { passes: 0, deflect: 0, timeouts: { home: 0, away: 0 }, inbounds: 0, fiveSeconds: 0, backcourt: 0,
-                intentionalFouls: 0, intentionalByQ: {}, lastSecondShots: 0, buzzerBeaters: 0, setPlays: 0, setPlayTouches: 0, setPlayShots: 0 };
+                intentionalFouls: 0, intentionalByQ: {}, lastSecondShots: 0, screens: 0, fastBreaks: 0, doubles: 0, humanTouches: 0, buzzerBeaters: 0, setPlays: 0, setPlayTouches: 0, setPlayShots: 0 };
     M.quarterShooting = { home: [], away: [] };
     M.timeout = null; M.inbound = null; M.next = null; M.setPlay = null; M.pendingTimeout = null;
     M.run = { side: null, pts: 0 };
@@ -647,11 +652,29 @@ export const BasketballEngine = (() => {
     const holder = M.ball.holder;
     const play = M.setPlay?.side === off.side ? M.setPlay : null;
 
+    // Pick and roll (#28): every few seconds a big comes up to screen the handler's man, then rolls
+    if (M.pnr && (M.pnr.side !== off.side || M.pnr.until < M.gameTime || (M.ball.state === 'held' && holder !== M.pnr.handler))) {
+      if (M.pnr.set) M.pnr.screener.cutUntil = M.gameTime + 1.5;   // the roll
+      M.pnr = null;
+    }
+    if (!play && !M.pnr && holder && M.ball.state === 'held' && !inBackcourt(holder) && dist(holder, hoop) > 17 && M.shotClock > 8 && random() < dt * 0.4) {
+      const screener = ['C', 'PF'].map(r => off.players.find(q => q.role === r && q !== holder && !(q.human && !M.autoHuman))).find(Boolean);
+      if (screener) { M.pnr = { side: off.side, screener, handler: holder, until: M.gameTime + 2.8, set: false }; M.stats.screens++; }
+    }
+
     off.players.forEach(p => {
       if (p.human && !M.autoHuman) return;
       if (p === holder) return handlerAI(p, dt);
       // Off-ball: hold the spot, crash the glass while a shot is up, cut now and then
       if (M.ball.state === 'shot') return steer(p, reboundSpot(p, hoop), 0.95, dt);
+      if (M.pnr && p === M.pnr.screener && holder) {
+        const mark = nearestOpp(holder);
+        const spot = towards(mark, holder, 1.3);
+        if (!M.pnr.set && dist(p, spot) < 1.6) M.pnr.set = true;
+        return steer(p, M.pnr.set ? hoop : spot, M.pnr.set ? 0.95 : 0.9, dt);
+      }
+      // the break: run to the spot at full speed
+      if (p.runOut > M.gameTime) return steer(p, spots[p.role], 1, dt);
       // The play out of the huddle: the screener walks into the shooter's man, the shooter comes off him
       if (play && p === play.target) return steer(p, play.spot, 0.95, dt);
       if (play && p === play.screener && play.left > 4) {
@@ -721,7 +744,7 @@ export const BasketballEngine = (() => {
         const back = inBackcourt(man);
         const style = man.tendency || DEFAULT_TENDENCY;
         // a shooter is closed out tight beyond the arc, a slasher played off a step, a non-shooter sagged off
-        let gap = 3.2 + (1 - p.stamina) * 1.6;
+        let gap = 3.2 + (1 - p.stamina) * 1.6 + (1 - M.difficulty) * 0.9;   // lower leagues close out loose
         if (!back && isThree(man, attackHoop(man.side))) gap += style.threeRate > 0.5 ? -0.8 : style.threeRate < 0.2 ? 1.3 : 0;
         if (!back && style.driveRate > 0.55) gap += 0.7;
         target = towards(man, dh, back ? 7 : gap);
@@ -734,6 +757,14 @@ export const BasketballEngine = (() => {
           const help = towards(holder, dh, 5);
           target = { x: lerp(target.x, help.x, 0.4), y: lerp(target.y, help.y, 0.4) };
         }
+        // An NBA defence punishes bad spacing (#28): when my man stands next to another attacker
+        // one defender can guard both, and I go and double the ball
+        const crowded = M.difficulty >= 0.6 && holder && M.ball.state === 'held' && dist(holder, dh) < 24 && dist(man, holder) > 8 &&
+          off.players.some(o => o !== man && o !== holder && dist(o, man) < 7);
+        if (crowded) {
+          target = towards(holder, dh, 2.5); speed = 0.95;
+          if (!p.doubling) { p.doubling = true; M.stats.doubles++; }
+        } else p.doubling = false;
       }
       steer(p, target, speed, dt);
       // contest: jump when a shot is likely right next to you
@@ -772,7 +803,7 @@ export const BasketballEngine = (() => {
       if (inBackcourt(p) && effClock >= 3) {
         const ahead = M[p.side].players.filter(t => t !== p && dist(t, hoop) < d - 15 && dist(t, nearestOpp(t)) > 6)
           .sort((a, b) => dist(a, hoop) - dist(b, hoop))[0];
-        if (ahead && passLaneRisk(p, ahead) < 0.1 && random() < 0.5) return passTo(p, ahead);
+        if (ahead && passLaneRisk(p, ahead) < 0.1 && random() < (M.possStart.origin === 'live' ? 0.85 : 0.5)) return passTo(p, ahead);
         p.driving = false;
         return advance(p, def, hoop, dd, dt);
       }
@@ -785,13 +816,15 @@ export const BasketballEngine = (() => {
       const teamShots = M[p.side].players.reduce((a, q) => a + q.box.fga, 0);
       const share = teamShots > 12 ? p.box.fga / teamShots : 0.2;
       const hog = Math.max(0, share - (p.star ? 0.34 : 0.27)) * 2.2;   // a star is allowed his usage
+      // ... and a man who has hardly shot gets a green light — nobody on the floor is decoration (#28)
+      const starved = teamShots > 12 ? Math.max(0, (p.human ? 0.15 : 0.09) - share) * (p.human ? 3.0 : 1.8) : 0;
       const tend = p.tendency || DEFAULT_TENDENCY;
       const desperate = effClock < 3.0;
       // A good look inside is worth taking even when a three grades higher on paper
       const inside = d < 8 && q > 0.47 + hog * 0.5 && dd > 1.8;
       // One threshold for both shot types: the question is only whether this
       // look beats what another possession of ball movement would produce.
-      let bar = 1.19 - Math.pow(urgency, 1.7) * 0.46 + hog;
+      let bar = 1.19 - Math.pow(urgency, 1.7) * 0.46 + hog - starved + (random() - 0.5) * 0.35 * (1 - M.difficulty);   // lower leagues take worse shots
       // Style (#52): a shooter takes the three he likes, a slasher passes it up for the drive
       if (val === 3) bar -= (tend.threeRate - 0.3) * 0.35; else if (d > 8) bar += (tend.threeRate - 0.3) * 0.15;
       // End of period, end of game (#50)
@@ -823,6 +856,7 @@ export const BasketballEngine = (() => {
     }
 
     if (inBackcourt(p) && Math.min(M.shotClock, M.clock) >= 3) return advance(p, def, hoop, dd, dt);
+    if (M.pnr?.set && M.pnr.handler === p && d > 6) p.driving = true;   // come off the screen
     if (p.driving && d > 4.5) {
       const help = M.players.filter(x => x.side !== p.side && dist(x, p) < 6.5).length;
       if (help >= 2 && M.shotClock > 3.5) {
@@ -860,6 +894,17 @@ export const BasketballEngine = (() => {
       let ev = shotQuality(t, opp, { forDecision: true }) * shotValue(t, hoop) - lane * 1.4;
       if (t.human && M.callForBall && M.gameTime - M.callForBall < 1.5) ev += 0.35;
       if (M.setPlay?.side === p.side && t === M.setPlay.target && M.setPlay.left > 3) ev += 0.4;
+      if (M.pnr?.set && t === M.pnr.screener) ev += 0.25;   // the roll man
+      // Team-mates feed the human at a rate that fits his role and his game (#28): a guard
+      // sees more of the ball than a centre, a better scorer more than a worse one — and
+      // nobody is frozen out for half a quarter
+      if (t.human) {
+        const usage = { PG: 0.10, SG: 0.08, SF: 0.06, PF: 0.03, C: 0.02 }[t.role] || 0.05;
+        const mine = (t.ratings.three + t.ratings.rim + t.ratings.handle) / 3;
+        const team = M[p.side].players.reduce((a, q) => a + (q.ratings.three + q.ratings.rim + q.ratings.handle) / 3, 0) / M[p.side].players.length;
+        ev += usage + clamp((mine - team) / 100 * 0.5, -0.12, 0.14);
+        if (M.gameTime - Math.max(0, t.catchAt) > 30) ev += 0.3;
+      }
       const teamShots = M[p.side].players.reduce((a, q) => a + q.box.fga, 0);
       if (teamShots > 12) ev += clamp((0.24 - t.box.fga / teamShots) * 0.9, -0.12, 0.14);
       if (dist(p, t) > 40) ev -= 0.25;
@@ -887,7 +932,7 @@ export const BasketballEngine = (() => {
     const d = dist(from, to) || 1;
     const speed = 42 + from.ratings.iq / 10;
     // Errant pass: long or contested feeds sail on you
-    const risk = clamp(0.0015 + passLaneRisk(from, to) * 0.016 + d / 9000 + (85 - from.ratings.iq) / 14000, 0, 0.03);
+    const risk = clamp((0.0015 + passLaneRisk(from, to) * 0.016 + d / 9000 + (85 - from.ratings.iq) / 14000) * (1.6 - 0.6 * M.difficulty), 0, 0.04);
     const target = random() < risk
       ? { x: clamp(to.x + rnd(-9, 9), -3, COURT.length + 3), y: clamp(to.y + rnd(-9, 9), -3, COURT.width + 3) }
       : to;
@@ -910,8 +955,17 @@ export const BasketballEngine = (() => {
     p.catchAt = M.gameTime;
     p.dribbleFrom = { x: p.x, y: p.y };
     p.paint = 0;
-    if (flip) { M.possession = p.side; M.shotClock = RULES.shotClock; M.lastPass = null; }
+    if (flip) {
+      M.possession = p.side; M.shotClock = RULES.shotClock; M.lastPass = null;
+      M.pnr = null;
+      // A live turnover or rebound starts a break: the wings run out ahead of the ball (#28)
+      if (M.phase === 'live') {
+        M.possStart = { at: M.gameTime, origin: 'live' };
+        M[p.side].players.forEach(q => { if (q !== p && (q.role === 'SG' || q.role === 'SF' || (q.role === 'PG' && p.role !== 'PG'))) q.runOut = M.gameTime + 3.5; });
+      }
+    }
     else if (oreb) M.shotClock = Math.max(M.shotClock, RULES.shotClockOreb);
+    if (p.human) M.stats.humanTouches++;
     else if (!keepClock) M.shotClock = M.shotClock;
     if (flip) M.backcourtT = 0;
     if (M.setPlay?.side === p.side && p === M.setPlay.target && !M.setPlay.touched) { M.setPlay.touched = true; M.stats.setPlayTouches++; }
@@ -1030,7 +1084,13 @@ export const BasketballEngine = (() => {
         const d = dist(q, b);
         if (d > q.r + 1.6 || q.cooldown > 0) return;
         const inside = b.rebound && q.side !== b.rebound.offSide ? 0.10 : 0;
-        const score = q.ratings.reb / 100 + inside + random() * 0.6 - d * 0.15;
+        // Box out (#28): an attacker with a defender on his body between him and the ball loses the scramble
+        let boxed = 0;
+        if (b.rebound && q.side === b.rebound.offSide) {
+          const blocker = M.players.find(o => o.side !== q.side && dist(o, q) < 3.2 && dist(o, b) < d);
+          if (blocker) boxed = 0.15 * M.difficulty * (0.6 + blocker.ratings.reb / 250);
+        }
+        const score = q.ratings.reb / 100 + inside + random() * 0.6 - d * 0.15 - boxed;
         if (score > bestScore) { bestScore = score; claim = q; }
       });
       if (claim) {
@@ -1104,6 +1164,8 @@ export const BasketballEngine = (() => {
     if (val === 3) shooter.box.tpa++;
     if (M.opts.trace) (M.stats.shots ||= []).push({ q: M.quarter, clock: Math.round(M.clock), side: shooter.side, role: shooter.role, d: Math.round(d), dd: Math.round(dd * 10) / 10, why, made });
     if (M.clock < 4) M.stats.lastSecondShots++;
+    const onBreak = M.possStart.origin === 'live' && M.gameTime - M.possStart.at < 6 && d < 12;
+    if (onBreak) M.stats.fastBreaks++;
     if (M.setPlay?.side === shooter.side && shooter === M.setPlay.target) M.stats.setPlayShots++;
     const travelled = shooter.dribbleFrom ? dist(shooter, shooter.dribbleFrom) : 99;
     const assist = M.lastPass && M.lastPass.to === shooter &&
@@ -1120,7 +1182,7 @@ export const BasketballEngine = (() => {
     M.ball.state = 'shot';
     M.ball.holder = null;
     M.ball.shot = {
-      shooter, hoop, val, made, blocked, fouled, defender: def, assist, carom,
+      shooter, hoop, val, made, blocked, fouled, defender: def, assist, carom, onBreak,
       from: { x: shooter.x, y: shooter.y }, to: blocked ? { x: shooter.x + rnd(-6, 6), y: shooter.y + rnd(-6, 6) } : hoop,
       t: 0,
       flight: blocked ? 0.35 : clamp(0.75 + d * 0.030, 0.7, 1.7),
@@ -1148,7 +1210,7 @@ export const BasketballEngine = (() => {
       score(s.shooter, s.val);
       const label = s.val === 3 ? 'Dreier' : dist(s.from, s.hoop) < 5 ? 'Korbleger' : 'Wurf';
       const buzzer = M.clock <= 0;
-      say(`${buzzer ? 'BUZZER-BEATER! ' : ''}${label} ${s.shooter.name} (${s.val})`, s.shooter.side === 'home' ? 'player' : 'opponent');
+      say(`${buzzer ? 'BUZZER-BEATER! ' : s.onBreak ? 'Schnellangriff — ' : ''}${label} ${s.shooter.name} (${s.val})`, s.shooter.side === 'home' ? 'player' : 'opponent');
       if (buzzer) { M.stats.buzzerBeaters++; flash('BUZZER-BEATER!'); }
       if (s.fouled) { foul(s.defender, s.shooter, 1, true); return; }
       return deadBall(other(s.shooter.side), { madeBasket: true });
@@ -1430,6 +1492,8 @@ export const BasketballEngine = (() => {
     M.possession = side;
     M.lastPass = null;
     M.backcourtT = 0;
+    M.pnr = null;
+    M.possStart = { at: M.gameTime, origin: 'dead' };
     next.inbounder = inbounder;
   }
 
