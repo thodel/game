@@ -76,9 +76,9 @@ export const BasketballEngine = (() => {
   let M = null; // live match state
 
   // ── Roster generation ─────────────────────────────
-  function ratingsFor(role, strength) {
+  function ratingsFor(role, strength, jitter = true) {
     const r = ROLES[role];
-    const base = v => clamp(Math.round(v + rnd(-6, 6)), 15, 99);
+    const base = v => clamp(Math.round(v + (jitter ? rnd(-6, 6) : 0)), 15, 99);
     return {
       speed:   base(strength * (role === 'C' ? 0.88 : role === 'PF' ? 0.94 : 1.06)),
       handle:  base(strength * r.handle),
@@ -91,9 +91,35 @@ export const BasketballEngine = (() => {
     };
   }
 
+  // What a player's style does to his numbers: the same 70 rating shoots
+  // threes as a shooter and lives at the rim as a slasher (#52)
+  const SHAPE = {
+    shooter:   { three: 9, rim: -4, handle: 2 },
+    slasher:   { rim: 9, speed: 4, three: -6 },
+    playmaker: { iq: 8, handle: 6, rim: -3 },
+    big:       { reb: 6, defense: 4, three: -4 },
+    defender:  { defense: 10, three: -3, iq: 2 },
+  };
+  const DEFAULT_TENDENCY = { archetype: null, threeRate: 0.3, driveRate: 0.35, passFirst: 0.4 };
+
+  // A persistent roster player (#51): ratings derive from his rating and
+  // archetype without a random draw, so he is the same man every night
+  function fromRoster(side, pl, bench) {
+    const role = ROLES[pl.position] ? pl.position : 'SF';
+    const ratings = ratingsFor(role, pl.rating, false);
+    const shape = SHAPE[pl.tendency?.archetype] || {};
+    Object.entries(shape).forEach(([k, v]) => { ratings[k] = clamp(ratings[k] + v, 15, 99); });
+    if (pl.star) ['three', 'rim', 'handle', 'iq'].forEach(k => { ratings[k] = clamp(ratings[k] + 4, 15, 99); });
+    let h = 0; for (const ch of pl.name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    const p = makePlayer(side, role, pl.name, ROLES[role].n + (bench ? 20 : 0) + (h % 10), ratings);
+    p.tendency = { ...DEFAULT_TENDENCY, ...(pl.tendency || {}) };
+    p.star = !!pl.star;
+    return p;
+  }
+
   function makePlayer(side, role, name, number, ratings, human) {
     return {
-      side, role, name, number, ratings, human: !!human,
+      side, role, name, number, ratings, human: !!human, tendency: DEFAULT_TENDENCY, star: false,
       x: 0, y: 0, vx: 0, vy: 0, facing: 0, stride: 0, stamina: 1, cutUntil: 0,
       r: 0.95 + ROLES[role].height * 0.055,   // body radius in feet, taller = wider
       maxSpeed: 15.5 + ratings.speed / 100 * 6.5, // ft per game-second, sprinting
@@ -110,9 +136,24 @@ export const BasketballEngine = (() => {
   // Ten men: five starters and a bench one tier below them. `players` is the
   // five on the court — every loop in the engine runs over it — and `roster`
   // is everyone, so a substitution is a swap of objects at a dead ball.
-  function makeTeam(side, teamName, strength, humanSpec) {
+  function makeTeam(side, teamName, strength, humanSpec, roster) {
     const starters = [], bench = [];
     const humanRole = humanSpec ? (ROLE_BY_LABEL[humanSpec.position] || 'SF') : null;
+    if (roster && roster.length >= 10) {
+      // the club's own men, the same every night; the human takes his slot among the starters
+      const humanP = humanSpec ? makePlayer(side, humanRole, humanSpec.name, humanSpec.number || ROLES[humanRole].n, humanSpec.ratings, true) : null;
+      let placed = false;
+      roster.slice(0, 5).forEach(pl => {
+        const mine = humanP && !placed && (pl.human || pl.position === humanRole);
+        const p = mine ? humanP : fromRoster(side, pl, false);
+        if (mine) placed = true;
+        p.starter = true; p.onCourt = true; p.stintStart = 0; starters.push(p);
+      });
+      if (humanP && !placed) { humanP.starter = true; humanP.onCourt = true; starters[4] = humanP; }
+      roster.slice(5, 10).forEach(pl => bench.push(fromRoster(side, pl, true)));
+      const avg = Math.round(roster.slice(0, 5).reduce((a, pl) => a + pl.rating, 0) / 5);
+      return { side, name: teamName, players: starters, roster: [...starters, ...bench], fouls: 0, score: 0, strength: avg, timeouts: RULES.timeouts, lateTimeouts: 0, lateFouls: 0 };
+    }
     ORDER.forEach(role => {
       const p = (humanSpec && role === humanRole)
         ? makePlayer(side, role, humanSpec.name, humanSpec.number || ROLES[role].n, humanSpec.ratings, true)
@@ -203,8 +244,8 @@ export const BasketballEngine = (() => {
     if (!canvas) return;
     RULES.quarterMinutes = opts.quarterMinutes || RULES.quarterMinutes;
 
-    const home = makeTeam('home', opts.home.name, opts.home.strength, opts.human);
-    const away = makeTeam('away', opts.away.name, opts.away.strength, null);
+    const home = makeTeam('home', opts.home.name, opts.home.strength, opts.human, opts.home.roster);
+    const away = makeTeam('away', opts.away.name, opts.away.strength, null, opts.away.roster);
 
     M = {
       opts, canvas, ctx: canvas.getContext('2d'),
@@ -678,11 +719,16 @@ export const BasketballEngine = (() => {
       if (man === holder) {
         // in transition the defender gets back ahead of the ball; set, he sits 3 ft off — tired closeouts are loose
         const back = inBackcourt(man);
-        target = towards(man, dh, back ? 7 : 3.2 + (1 - p.stamina) * 1.6);
+        const style = man.tendency || DEFAULT_TENDENCY;
+        // a shooter is closed out tight beyond the arc, a slasher played off a step, a non-shooter sagged off
+        let gap = 3.2 + (1 - p.stamina) * 1.6;
+        if (!back && isThree(man, attackHoop(man.side))) gap += style.threeRate > 0.5 ? -0.8 : style.threeRate < 0.2 ? 1.3 : 0;
+        if (!back && style.driveRate > 0.55) gap += 0.7;
+        target = towards(man, dh, back ? 7 : gap);
         if (back) speed = 1;
         if (dist(p, man) < 4 && man.human && random() < dt * 0.5) p.jump = Math.max(p.jump, 0.0);
       } else {
-        const gap = 4 + clamp(dist(man, M.ball) / 4.5, 0, 5);
+        const gap = 4 + clamp(dist(man, M.ball) / 4.5, 0, 5) - ((man.tendency?.threeRate ?? 0.3) > 0.5 ? 1.5 : 0);   // stay home on shooters
         target = towards(man, dh, gap);
         if (driving && dist(man, M.ball) > 14) {
           const help = towards(holder, dh, 5);
@@ -738,13 +784,16 @@ export const BasketballEngine = (() => {
       // A player who has taken far more than his share holds a higher standard
       const teamShots = M[p.side].players.reduce((a, q) => a + q.box.fga, 0);
       const share = teamShots > 12 ? p.box.fga / teamShots : 0.2;
-      const hog = Math.max(0, share - 0.27) * 2.2;
+      const hog = Math.max(0, share - (p.star ? 0.34 : 0.27)) * 2.2;   // a star is allowed his usage
+      const tend = p.tendency || DEFAULT_TENDENCY;
       const desperate = effClock < 3.0;
       // A good look inside is worth taking even when a three grades higher on paper
       const inside = d < 8 && q > 0.47 + hog * 0.5 && dd > 1.8;
       // One threshold for both shot types: the question is only whether this
       // look beats what another possession of ball movement would produce.
       let bar = 1.19 - Math.pow(urgency, 1.7) * 0.46 + hog;
+      // Style (#52): a shooter takes the three he likes, a slasher passes it up for the drive
+      if (val === 3) bar -= (tend.threeRate - 0.3) * 0.35; else if (d > 8) bar += (tend.threeRate - 0.3) * 0.15;
       // End of period, end of game (#50)
       const margin = M[p.side].score - M[other(p.side)].score;
       const late = M.quarter >= RULES.quarters && M.clock < 40;
@@ -765,12 +814,12 @@ export const BasketballEngine = (() => {
       }
       const held = M.gameTime - (p.catchAt || 0);
       const mate = effClock > 4 && held > 0.7 ? bestPass(p) : null;
-      if (mate && mate.ev > ev + Math.max(0.02, 0.16 - held * 0.03) + urgency * 0.25) return passTo(p, mate.player);
+      if (mate && mate.ev > ev + Math.max(0.02, 0.16 - held * 0.03 - (tend.passFirst - 0.4) * 0.12) + urgency * 0.25) return passTo(p, mate.player);
       // drive if the lane is not walled off
       const lane = towards(p, hoop, Math.min(d, 12));
       const clogged = M.players.filter(x => x.side !== p.side && x !== def && dist(x, lane) < 4.2).length > 1;
       const edge = (p.ratings.handle + p.ratings.speed) / 2 - def.ratings.defense;
-      p.driving = !clogged && d > 5 && (dd > 6 || edge > 5);
+      p.driving = !clogged && d > 5 && (dd > 6 || edge > 5 - (tend.driveRate - 0.35) * 8);
     }
 
     if (inBackcourt(p) && Math.min(M.shotClock, M.clock) >= 3) return advance(p, def, hoop, dd, dt);
@@ -1566,7 +1615,7 @@ export const BasketballEngine = (() => {
     if (M.raf) cancelAnimationFrame(M.raf);
     M.cleanup?.();
     const line = t => t.roster.map(p => ({
-      name: p.name, number: p.number, role: p.role, human: !!p.human,
+      name: p.name, number: p.number, role: p.role, human: !!p.human, star: !!p.star,
       ...p.box,
       min: Math.round(p.box.min * 10) / 10,
       reb: p.box.oreb + p.box.dreb,

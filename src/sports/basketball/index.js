@@ -2,7 +2,7 @@
 import { clamp, avgStat, pickExcluding } from '../../core/utils.js';
 import { endSeason }                     from '../../core/season.js';
 import { checkAchievements, showAchievement } from '../../core/achievements.js';
-import { matchSeed }                     from '../../core/rng.js';
+import { createRNG, matchSeed }          from '../../core/rng.js';
 import { addLog }                        from '../../ui/log.js';
 
 // ─── Match event pools ────────────────────────────────────────────────────────
@@ -93,11 +93,47 @@ export function makeRoster(rng, teamStrength) {
     players.push({
       name, rating, position,
       fouls: 0, stamina: 100, minutesPlayed: 0,
-      stats: { pts: 0, reb: 0, ast: 0 },
+      stats: { pts: 0, reb: 0, ast: 0, gp: 0 },
       tendency: makeTendency(position, rng),
     });
   }
+  // About a third of clubs have a star: a starter a clear tier above the rest (#52)
+  if (rng.next() < 0.35) {
+    const star = players.slice(0, 5).sort((a, b) => b.rating - a.rating)[0];
+    star.rating = clamp(star.rating + 12, 20, 95);
+    star.star = true;
+  }
   return players;
+}
+
+// The player's own slot on his club's roster carries his name and his numbers (#51)
+export function ensureHumanSlot(state) {
+  const team = state.league?.teams?.[state.career.teamName];
+  if (!team) return null;
+  const pos = { 'Point Guard': 'PG', 'Shooting Guard': 'SG', 'Small Forward': 'SF', 'Power Forward': 'PF', 'Center': 'C' }[state.player.position] || 'SF';
+  let slot = team.roster.find(pl => pl.human);
+  if (!slot) {
+    slot = team.roster.slice(0, 5).find(pl => pl.position === pos) || team.roster[0];
+    slot.human = true;
+  }
+  slot.name = state.player.name;
+  slot.position = pos;
+  slot.stats = { pts: 0, reb: 0, ast: 0, gp: 0, ...slot.stats };
+  return slot;
+}
+
+// A box score lands in the season totals of the men who played it (#51)
+export function applyBoxToRoster(roster, rows) {
+  if (!roster || !rows) return;
+  rows.forEach(row => {
+    const pl = row.human ? roster.find(x => x.human) : roster.find(x => x.name === row.name && !x.human);
+    if (!pl) return;
+    pl.stats = { pts: 0, reb: 0, ast: 0, gp: 0, ...pl.stats };
+    pl.stats.pts += row.pts || 0;
+    pl.stats.reb += row.reb || 0;
+    pl.stats.ast += row.ast || 0;
+    if ((row.min ?? row.minutesPlayed ?? 1) > 0) pl.stats.gp++;
+  });
 }
 
 // ─── League roster initialiser (Epic #51) ────────────────────────────────────
@@ -116,6 +152,45 @@ export function initLeagueRoster(state, adapter, rng) {
   });
 }
 
+// ─── League-wide box scores (#51) ─────────────────────────────────────────
+// The season resolves every other club's fixtures as scores. Each of those
+// games is spread over the two rosters here — points by rating, rebounds and
+// assists by position, starters first — so the league's leaders are the whole
+// league and match its results, not just the clubs the player happened to meet.
+export function settleLeagueBoxes(state) {
+  const season = state.career.nba, teams = state.league?.teams;
+  if (!season || !teams) return;
+  season.games.forEach((g, idx) => {
+    if (!g.done || g.boxed) return;
+    g.boxed = true;
+    if (g.home === season.myTeam || g.away === season.myTeam) return;   // those games have real box scores
+    const rng = createRNG(matchSeed(state._saveSeed || 42, state.career.season, 20000 + idx));
+    [[g.home, g.hs], [g.away, g.as]].forEach(([id, pts]) => {
+      const roster = teams[season.teams[id]?.name]?.roster;
+      if (roster) applyBoxToRoster(roster, spreadBox(roster, pts, rng));
+    });
+  });
+}
+
+const REB_W = { PG: 0.6, SG: 0.8, SF: 1.0, PF: 1.4, C: 1.7 };
+const AST_W = { PG: 2.0, SG: 1.1, SF: 1.0, PF: 0.6, C: 0.5 };
+function spreadBox(roster, pts, rng) {
+  const share = (weight, total) => {
+    const w = roster.map((pl, i) => (i < 5 ? 1 : 0.35) * weight(pl) * (0.7 + rng.next() * 0.6));
+    const W = w.reduce((a, b) => a + b, 0) || 1;
+    // an integer split that adds up to the total
+    const raw = w.map(x => total * x / W);
+    const out = raw.map(Math.floor);
+    const left = total - out.reduce((a, b) => a + b, 0);
+    raw.map((x, i) => [x - out[i], i]).sort((a, b) => b[0] - a[0]).slice(0, Math.max(0, left)).forEach(([, i]) => { out[i]++; });
+    return out;
+  };
+  const p = share(pl => Math.pow(pl.rating / 60, 2), pts);
+  const r = share(pl => REB_W[pl.position] || 1, 40 + Math.round(rng.next() * 10));
+  const a = share(pl => AST_W[pl.position] || 1, Math.round(pts * (0.2 + rng.next() * 0.06)));
+  return roster.map((pl, i) => ({ name: pl.name, human: !!pl.human, pts: p[i], reb: r[i], ast: a[i], min: i < 5 ? 32 : 16 }));
+}
+
 // ─── League leaders (Epic #51) ────────────────────────────────────────────────
 export function getLeagueLeaders(state) {
   if (!state.league) return { scorers: [], assisters: [] };
@@ -123,9 +198,15 @@ export function getLeagueLeaders(state) {
   for (const [teamName, teamData] of Object.entries(state.league.teams)) {
     (teamData.roster || []).forEach(pl => allPlayers.push({ ...pl, team: teamName }));
   }
-  const scorers   = [...allPlayers].sort((a, b) => b.stats.pts - a.stats.pts).slice(0, 5);
-  const assisters = [...allPlayers].sort((a, b) => b.stats.ast - a.stats.ast).slice(0, 5);
-  return { scorers, assisters };
+  // per game, with a floor of games so a one-game wonder does not top the league
+  const per = (pl, k) => (pl.stats[k] || 0) / Math.max(1, pl.stats.gp || 1);
+  const mostGp = Math.max(0, ...allPlayers.map(pl => pl.stats.gp || 0));
+  const eligible = allPlayers.filter(pl => (pl.stats.gp || 0) >= Math.floor(mostGp * 0.5));
+  const pool = eligible.length ? eligible : allPlayers;
+  const top = k => [...pool].sort((a, b) => per(b, k) - per(a, k)).slice(0, 5).map(pl => ({ ...pl, avg: per(pl, k).toFixed(1) }));
+  const effOf = pl => per(pl, 'pts') + per(pl, 'reb') + per(pl, 'ast');
+  const efficiency = [...pool].sort((a, b) => effOf(b) - effOf(a)).slice(0, 5).map(pl => ({ ...pl, avg: effOf(pl).toFixed(1) }));
+  return { scorers: top('pts'), assisters: top('ast'), rebounders: top('reb'), efficiency };
 }
 
 // ─── Dominant archetype helper ────────────────────────────────────────────────
@@ -144,10 +225,13 @@ export function getScoutingInfo(oppRoster) {
   const arch   = getDominantArchetype(starters);
   const labels = ARCHETYPE_LABELS[arch] || ARCHETYPE_LABELS.big;
   const center = starters.find(pl => pl.position === 'C') || starters[4];
+  // who you have to stop: the star if there is one, else the best-rated starter
+  const stop = starters.find(pl => pl.star) || [...starters].sort((a, b) => b.rating - a.rating)[0];
   return {
     archetype: arch,
     strength:  labels.strength,
     keeper:    center ? `${center.name} (${labels.keeper})` : labels.keeper,
+    stop:      stop ? { name: stop.name, position: stop.position, rating: stop.rating, star: !!stop.star, archetype: stop.tendency?.archetype, ppg: stop.stats?.gp ? (stop.stats.pts / stop.stats.gp).toFixed(1) : null } : null,
     starters,
   };
 }
@@ -363,29 +447,28 @@ export const basketballAdapter = {
                                : clamp(pl.minutesPlayed - rng.randInt(0, 8), 10, 24);
     }));
 
-    // Season stats for the opposing roster (#51)
-    oppRoster.forEach(pl => {
-      pl.stats.pts += Math.round(awayScore * (pl.rating / 100) * rng.randInt(1, 4) / 10);
-      pl.stats.ast += rng.randInt(0, 3);
-      pl.stats.reb += rng.randInt(0, 5);
-    });
-
     const personal = clamp(humanPts, 0, Math.max(homeScore, 1));
     const assists  = clamp(humanAst, 0, 20);
     const boxFor = (roster, teamScore) => {
-      const ratingSum = roster.slice(0, 5).reduce((s, pl) => s + pl.rating, 0) || 1;
-      return roster.slice(0, 5).map(pl => ({
-        name: pl.name, position: pl.position, minutesPlayed: pl.minutesPlayed,
+      const five = roster.slice(0, 5).filter(pl => !pl.human);
+      const ratingSum = five.reduce((s, pl) => s + pl.rating, 0) || 1;
+      return five.map(pl => ({
+        name: pl.name, position: pl.position, minutesPlayed: pl.minutesPlayed, star: !!pl.star,
         pts: Math.max(0, Math.round(teamScore * (pl.rating / ratingSum) * (0.75 + rng.next() * 0.5))),
         reb: rng.randInt(1, 9), ast: rng.randInt(0, 7), fouls: pl.fouls,
       }));
     };
+    const boxScore = boxFor(homeRoster, Math.max(0, homeScore - personal));
+    const oppBox = boxFor(oppRoster, awayScore);
+    // Season stats (#51): both rosters, and the player's own slot, from this game's box
+    applyBoxToRoster(homeRoster, boxScore);
+    if (homeRoster.some(pl => pl.human)) applyBoxToRoster(homeRoster, [{ human: true, pts: personal, ast: assists, reb: rng.randInt(2, 8), min: humanMinutes }]);
+    applyBoxToRoster(oppRoster, oppBox);
 
     return {
       homeScore, awayScore, quarters, events, opponent, isHome,
       human: { pts: personal, ast: assists, min: humanMinutes },
-      boxScore: boxFor(homeRoster, Math.max(0, homeScore - personal)),
-      oppBox:   boxFor(oppRoster, awayScore),
+      boxScore, oppBox,
       scoutingInfo: getScoutingInfo(oppRoster),
     };
   },
