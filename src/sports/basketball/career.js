@@ -8,7 +8,7 @@ import { clamp, avgStat, fmt } from '../../core/utils.js';
 import { checkAchievements, showAchievement } from '../../core/achievements.js';
 import { SeasonEngine }      from './season.js';
 import { BasketballEngine }  from './engine.js';
-import { basketballAdapter, getLeagueLeaders } from './index.js';
+import { basketballAdapter, getLeagueLeaders, initLeagueRoster, makeRoster, ensureHumanSlot, applyBoxToRoster, settleLeagueBoxes } from './index.js';
 import { generatePlayByPlay, generateQuarterScores } from '../../ui/commentary.js';
 import { createRNG, matchSeed } from '../../core/rng.js';
 
@@ -61,9 +61,11 @@ export function spendRestDay(state, teamsByLeague) {
   if (season.day >= limit) return false;
   season.day = Math.min(season.day + 1, limit);
   SeasonEngine.advanceTo(season, season.day);
+  settleLeagueBoxes(state);
   creditSkillDays(state);
   return true;
 }
+
 
 export function nextGameInfo(state) {
   const season = state.career.nba;
@@ -166,6 +168,7 @@ function recordFixture(state, fixture, myScore, oppScore) {
   const isHome = fixture.home === season.myTeam;
   SeasonEngine.record(season, fixture, isHome ? myScore : oppScore, isHome ? oppScore : myScore);
   SeasonEngine.advanceTo(season, fixture.day);
+  settleLeagueBoxes(state);
   creditSkillDays(state);
 }
 
@@ -329,13 +332,19 @@ export function startMatch(state, App) {
   document.getElementById('bb-tipoff')?.remove();
   const level = c.leagueIndex >= 1 ? 76 : 60;
   const fixtureKey = pendingGame?.fixture ? pendingGame.fixture.day * 10 + (pendingGame.isHome ? 1 : 0) : 9500 + (pendingGame?.playoff?.game?.n || 0);
+  // Persistent rosters (#51): the league's men, the same every night, on the live engine's scale
+  const oppName = pendingGame?.opponent || 'Gegner';
+  if (!state.league?.teams?.[c.teamName]) initLeagueRoster(state, basketballAdapter, state._rng);
+  if (!state.league.teams[oppName]) state.league.teams[oppName] = { roster: makeRoster(state._rng, clamp(50 + rnd(state._rng, -15, 15), 30, 75)), w: 0, l: 0, pts: 0 };
+  ensureHumanSlot(state);
+  const onLiveScale = roster => roster.map(pl => ({ ...pl, rating: clamp(Math.round(pl.rating + level - 50), 30, 97) }));
   BasketballEngine.start({
     canvasId: 'bb-canvas',
     rng: createRNG(matchSeed(state._saveSeed || 42, c.season, fixtureKey)),
     quarterMinutes,
     backToBack: (pendingGame?.restDays ?? 1) === 0,
-    home: { name: c.teamName, strength: clamp(level + rnd(state._rng, -4, 4), 35, 95) },
-    away: { name: pendingGame?.opponent || 'Gegner', strength: clamp(level + rnd(state._rng, -6, 8), 35, 96) },
+    home: { name: c.teamName, strength: clamp(level + rnd(state._rng, -4, 4), 35, 95), roster: onLiveScale(state.league.teams[c.teamName].roster) },
+    away: { name: oppName, strength: clamp(level + rnd(state._rng, -6, 8), 35, 96), roster: onLiveScale(state.league.teams[oppName].roster) },
     human: {
       name: state.player.name, number: 23, position: state.player.position,
       energy: state.player.energy,
@@ -378,6 +387,22 @@ function finishMatch(state, App, res) {
   const line = projected
     ? { ...me, min: Math.round(scale(me.min)), pts: scale(me.pts), reb: scale(me.reb), ast: scale(me.ast) }
     : me;
+  // Season stats for everyone who played (#51). A short game is projected like the
+  // table, but a player's line is pulled halfway toward his minutes share of the
+  // projected team numbers: sixteen points in eight minutes is a hot quarter, not 96 a game.
+  const teams = state.league?.teams;
+  const projectRows = (rows, teamPts) => {
+    const teamMin = rows.reduce((a, r) => a + (r.min || 0), 0) || 1;
+    return rows.map(r => {
+      const sh = (r.min || 0) / teamMin;
+      const blend = (v, typical, cap) => Math.min(cap, Math.round(projected ? 0.5 * scale(v) + 0.5 * typical * sh : v));
+      return { ...r, pts: blend(r.pts, teamPts, 50), reb: blend(r.reb, 44, 25), ast: blend(r.ast, 24, 20) };
+    });
+  };
+  if (teams) {
+    applyBoxToRoster(teams[state.career.teamName]?.roster, projectRows(res.box?.home || [], myScore));
+    applyBoxToRoster(teams[pending?.opponent]?.roster, projectRows(res.box?.away || [], oppScore));
+  }
 
   const season = state.career.nba;
   let money;
@@ -496,6 +521,7 @@ export function simulateSeason(state, App) {
 export function showPlayoffs(state, App) {
   const season = state.career.nba;
   SeasonEngine.advanceTo(season, SeasonEngine.SEASON_DAYS + 40);
+  settleLeagueBoxes(state);
   if (!season.playoffs) {
     SeasonEngine.startPlayoffs(season);
     const me = myTeam(state);
@@ -613,20 +639,16 @@ export function hubSection(state) {
     <div style="font-size:.78rem;color:var(--muted);margin-top:8px">Bestwerte: ${a.best.pts || 0} PTS · ${a.best.reb || 0} REB · ${a.best.ast || 0} AST · Double-Doubles ${a.dd} · Triple-Doubles ${a.td}</div>
   </div>` : '';
   if (!state.league || !Object.keys(state.league.teams).length) return mine;
-  const { scorers, assisters } = getLeagueLeaders(state);
-  const row = pl => `<div style="display:flex;justify-content:space-between;font-size:.82rem;padding:2px 0">
-    <span>${pl.name} <span style="color:var(--muted);font-size:.75rem">(${pl.team})</span></span>
-    <strong>${pl.stats.pts} Pts</strong>
+  const { scorers, assisters, rebounders, efficiency } = getLeagueLeaders(state);
+  const row = (pl, unit) => `<div style="display:flex;justify-content:space-between;font-size:.82rem;padding:2px 0${pl.human ? ';color:var(--basketball,#ef7d2e)' : ''}">
+    <span>${pl.star ? '⭐ ' : ''}${pl.name} <span style="color:var(--muted);font-size:.75rem">(${pl.team})</span></span>
+    <strong>${pl.avg} ${unit}</strong>
   </div>`;
-  const rowAst = pl => `<div style="display:flex;justify-content:space-between;font-size:.82rem;padding:2px 0">
-    <span>${pl.name} <span style="color:var(--muted);font-size:.75rem">(${pl.team})</span></span>
-    <strong>${pl.stats.ast} Ast</strong>
-  </div>`;
+  const list = (title, arr, unit) => `<div style="font-size:.8rem;color:var(--muted);margin:10px 0 6px">${title}</div>${arr.map(pl => row(pl, unit)).join('')}`;
+  const any = scorers.some(pl => (pl.stats.gp || 0) > 0);
   return mine + `<div class="card">
-    <div style="font-size:.8rem;color:var(--muted);margin-bottom:8px">🏆 LIGA — TOP SCORER</div>
-    ${scorers.length ? scorers.map(row).join('') : '<div style="color:var(--muted);font-size:.85rem">Noch keine Saison-Daten.</div>'}
-    <div style="font-size:.8rem;color:var(--muted);margin:10px 0 6px">🎯 TOP ASSISTGEBER</div>
-    ${assisters.length ? assisters.map(rowAst).join('') : ''}
+    <div style="font-size:.8rem;color:var(--muted)">🏆 LIGA-BESTENLISTEN <span style="font-size:.7rem">— pro Spiel</span></div>
+    ${any ? list('TOP SCORER', scorers, 'PPG') + list('🎯 ASSISTS', assisters, 'APG') + list('🪣 REBOUNDS', rebounders, 'RPG') + list('📈 EFFIZIENZ (PTS+REB+AST)', efficiency, '') : '<div style="color:var(--muted);font-size:.85rem;margin-top:6px">Noch keine Saison-Daten.</div>'}
   </div>`;
 }
 
@@ -635,9 +657,10 @@ export function scoutScreen(state, matchCtx, scouting) {
   const cfg = basketballAdapter;
   const starterRows = (scouting.starters || []).map(pl =>
     `<div style="display:flex;justify-content:space-between;font-size:.82rem;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.06)">
-      <span><strong>${pl.position}</strong> ${pl.name}</span>
-      <span style="color:var(--muted)">${pl.tendency?.archetype || ''} · ${pl.rating} RTG</span>
+      <span><strong>${pl.position}</strong> ${pl.star ? '⭐ ' : ''}${pl.name}</span>
+      <span style="color:var(--muted)">${pl.tendency?.archetype || ''} · ${pl.rating} RTG${pl.stats?.gp ? ` · ${(pl.stats.pts / pl.stats.gp).toFixed(1)} PPG` : ''}</span>
     </div>`).join('');
+  const stop = scouting.stop ? `<div style="font-size:.9rem;margin-top:4px">Den musst du stoppen: <strong>${scouting.stop.star ? '⭐ ' : ''}${scouting.stop.name}</strong> <span style="color:var(--muted)">(${scouting.stop.position} · ${scouting.stop.archetype || ''}${scouting.stop.ppg ? ` · ${scouting.stop.ppg} PPG` : ''})</span></div>` : '';
   return `<div class="screen match-screen">
     <div class="card">
       <div style="color:var(--muted);font-size:.8rem;margin-bottom:8px">${cfg.icon} ${cfg.name} — Scouting Report</div>
@@ -646,6 +669,7 @@ export function scoutScreen(state, matchCtx, scouting) {
         <div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">GEGNER-ANALYSE</div>
         <div style="font-size:.95rem">Stärken: <strong>${scouting.strength}</strong></div>
         <div style="font-size:.9rem;margin-top:4px;color:var(--muted)">Schlüsselspieler: ${scouting.keeper}</div>
+        ${stop}
       </div>
       <div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">STARTAUFSTELLUNG GEGNER</div>
       ${starterRows}
