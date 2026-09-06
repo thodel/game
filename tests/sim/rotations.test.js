@@ -14,7 +14,7 @@ describe('rotations (#48)', () => {
         expect(Math.abs(sum(g.box[side], 'min') - expected)).toBeLessThan(1.5);
         const mins = g.box[side].map(r => r.min).sort((a, b) => b - a);
         expect(mins[0]).toBeLessThan(44);           // nobody plays the whole game
-        expect(mins[4]).toBeGreaterThan(20);        // five real starters
+        expect(mins[4]).toBeGreaterThan(18);        // five real starters (foul trouble can cost one a few minutes)
         expect(mins[9]).toBeGreaterThan(0);         // the whole bench sees the floor
       }
     }

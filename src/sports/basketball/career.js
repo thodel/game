@@ -278,12 +278,13 @@ function showMatchScreen(state, App, opponentName, isHome) {
   render(`<div class="screen live-match-screen">${hud(state)}
     <div class="card live-match-card">
       <div class="live-scorebar bb-scorebar">
-        <div><small>${isHome ? 'HEIM' : 'AUSWÄRTS'}</small><strong>${me.name}</strong><em>Fouls <span id="bb-home-fouls">0</span></em></div>
+        <div><small>${isHome ? 'HEIM' : 'AUSWÄRTS'}</small><strong>${me.name}</strong><em>Fouls <span id="bb-home-fouls">0</span> · Auszeiten <span id="bb-home-to">7</span></em></div>
         <div class="bb-centre">
           <div class="live-score"><span id="bb-home-score">0</span><i>:</i><span id="bb-away-score">0</span></div>
           <div class="bb-clocks"><b id="bb-quarter">Q1</b><b id="bb-clock">00:00</b><u id="bb-shot">24</u></div>
+          <button class="btn btn-ghost btn-sm bb-to-btn" id="bb-to-btn" type="button" title="Auszeit nehmen (T)">⏸ Auszeit</button>
         </div>
-        <div class="live-away"><small>GEGNER</small><strong>${opponentName}</strong><em>Fouls <span id="bb-away-fouls">0</span></em></div>
+        <div class="live-away"><small>GEGNER</small><strong>${opponentName}</strong><em>Fouls <span id="bb-away-fouls">0</span> · Auszeiten <span id="bb-away-to">7</span></em></div>
       </div>
       <div class="live-pitch-wrap bb-court-wrap">
         <canvas id="bb-canvas" width="960" height="540" aria-label="Spielbares Basketballfeld"></canvas>
@@ -305,6 +306,7 @@ function showMatchScreen(state, App, opponentName, isHome) {
         <div class="touch-gamepad" aria-label="Touch-Steuerung">
           <div class="touch-joystick" id="bb-stick"><div class="touch-joystick-ring"></div><div class="touch-joystick-knob" id="bb-knob"></div></div>
           <div class="touch-actions">
+            <button class="touch-action bb-touch-to" id="bb-timeout" type="button">TO</button>
             <button class="touch-action touch-sprint" id="bb-sprint" type="button">SPRINT</button>
             <button class="touch-action bb-touch-pass" id="bb-pass" type="button">PASS</button>
             <button class="touch-action touch-shoot" id="bb-shoot" type="button"><span>🏀</span>WURF</button>
@@ -314,7 +316,7 @@ function showMatchScreen(state, App, opponentName, isHome) {
       <div class="live-controls">
         <span><kbd>WASD</kbd> bewegen</span><span><kbd>SHIFT</kbd> sprinten</span>
         <span><kbd>LEERTASTE</kbd> halten &amp; loslassen: Wurf — in der Abwehr blocken</span>
-        <span><kbd>E</kbd> Pass</span><span><kbd>Q</kbd> Ball klauen</span>
+        <span><kbd>E</kbd> Pass / Einwurf</span><span><kbd>Q</kbd> Ball klauen</span><span><kbd>T</kbd> Auszeit</span>
       </div>
       <button class="btn btn-ghost btn-sm live-cancel" onclick="App.showExitMenu()">⏏️ Spiel verlassen</button>
     </div></div>`);
